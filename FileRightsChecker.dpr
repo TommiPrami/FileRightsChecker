@@ -1,4 +1,4 @@
-﻿program FileRightsCheker;
+﻿program FileRightsChecker;
 
 uses
   Vcl.Forms,

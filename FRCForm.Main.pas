@@ -8,20 +8,20 @@ uses
 
 type
   TFRCMainForm = class(TForm)
-    PanelButtons: TPanel;
-    ButtonRun: TButton;
-    PanelLog: TPanel;
-    PanelTop: TPanel;
-    EditReadOnlyCheck: TEdit;
-    EditReadWrtiteChecks: TEdit;
-    Panel2: TPanel;
-    MemoLog: TMemo;
-    Label1: TLabel;
-    Label2: TLabel;
     ActionList: TActionList;
     ActionRun: TAction;
-    CheckBoxOpenFilesLongFileAndPathNameSupport: TCheckBox;
+    ButtonRun: TButton;
     CheckBoxCheckProcessBackupPrivileges: TCheckBox;
+    CheckBoxOpenFilesLongFileAndPathNameSupport: TCheckBox;
+    EditReadOnlyCheck: TEdit;
+    EditReadWrtiteChecks: TEdit;
+    LabelMustHaveReadRights: TLabel;
+    LabelMustHaveWriteRights: TLabel;
+    MemoLog: TMemo;
+    PanelButtons: TPanel;
+    PanelLeft: TPanel;
+    PanelLog: TPanel;
+    PanelTop: TPanel;
     procedure ActionRunExecute(Sender: TObject);
   private
     { Private declarations }

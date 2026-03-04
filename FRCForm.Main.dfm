@@ -55,7 +55,7 @@ object FRCMainForm: TFRCMainForm
       TabOrder = 2
     end
   end
-  object PanelLog: TPanel
+  object PanelLeft: TPanel
     Left = 0
     Top = 0
     Width = 819
@@ -74,7 +74,7 @@ object FRCMainForm: TFRCMainForm
       BevelOuter = bvNone
       ShowCaption = False
       TabOrder = 0
-      object Label1: TLabel
+      object LabelMustHaveWriteRights: TLabel
         AlignWithMargins = True
         Left = 3
         Top = 63
@@ -84,7 +84,7 @@ object FRCMainForm: TFRCMainForm
         Align = alTop
         Caption = 'Must have write rights'
       end
-      object Label2: TLabel
+      object LabelMustHaveReadRights: TLabel
         AlignWithMargins = True
         Left = 3
         Top = 8
@@ -92,7 +92,7 @@ object FRCMainForm: TFRCMainForm
         Height = 15
         Margins.Top = 8
         Align = alTop
-        Caption = 'Must haveread rights'
+        Caption = 'Must have read rights'
       end
       object EditReadOnlyCheck: TEdit
         AlignWithMargins = True
@@ -113,7 +113,7 @@ object FRCMainForm: TFRCMainForm
         TabOrder = 1
       end
     end
-    object Panel2: TPanel
+    object PanelLog: TPanel
       Left = 0
       Top = 113
       Width = 819
