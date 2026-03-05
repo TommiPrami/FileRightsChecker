@@ -106,16 +106,14 @@ procedure TFRCMainForm.LoadSettings;
 begin
   FSettings.LoadFromFile(SETTINGS_FILENAME);
 
-  EditReadOnlyCheck.Text := FSettings.ReadOnlyDirectoriesStr;
-  EditReadWrtiteChecks.Text := FSettings.ReadWriteDirectoriesStr;
+  EditReadOnlyCheck.Text := FSettings.ReadOnlyDirectoriesAsString;
+  EditReadWrtiteChecks.Text := FSettings.ReadWriteDirectoriesAsString;
 end;
 
 procedure TFRCMainForm.SaveSettings;
 begin
-  FSettings.Clear;
-
-  FSettings.AddReadOnlyDirectories(EditReadOnlyCheck.Text);
-  FSettings.AddReadWriteDirectories(EditReadWrtiteChecks.Text);
+  FSettings.ParseReadOnlyDirectoriesFromString(EditReadOnlyCheck.Text);
+  FSettings.ParseReadWriteDirectoriesFromString(EditReadWrtiteChecks.Text);
 
   FSettings.SaveToFile(SETTINGS_FILENAME);
 end;
