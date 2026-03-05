@@ -3,8 +3,8 @@
 interface
 
 uses
-  Winapi.Windows, Winapi.Messages, System.SysUtils, System.Variants, System.Classes, Vcl.Graphics,
-  Vcl.Controls, Vcl.Forms, Vcl.Dialogs, Vcl.StdCtrls, System.Actions, Vcl.ActnList, Vcl.ExtCtrls;
+  Winapi.Messages, Winapi.Windows, System.Actions, System.Classes, System.SysUtils, System.Variants, Vcl.ActnList,
+  Vcl.Controls, Vcl.Dialogs, Vcl.ExtCtrls, Vcl.Forms, Vcl.Graphics, Vcl.StdCtrls, FRCUnit.Settings;
 
 type
   TFRCMainForm = class(TForm)
@@ -22,11 +22,14 @@ type
     PanelLeft: TPanel;
     PanelLog: TPanel;
     PanelTop: TPanel;
+    procedure FormCreate(Sender: TObject);
+    procedure FormDestroy(Sender: TObject);
     procedure ActionRunExecute(Sender: TObject);
-  private
-    { Private declarations }
-  public
-    { Public declarations }
+    procedure FormShow(Sender: TObject);
+  strict private
+    FSettings: TFRCSettings;
+    procedure LoadSettings;
+    procedure SaveSettings;
   end;
 
 var
@@ -38,6 +41,21 @@ implementation
 
 uses
   FRCUnit.FileRightsChecker;
+
+const
+  SETTINGS_FILENAME = 'FRCSettings.json';
+
+procedure TFRCMainForm.FormCreate(Sender: TObject);
+begin
+  FSettings := TFRCSettings.Create;
+end;
+
+procedure TFRCMainForm.FormDestroy(Sender: TObject);
+begin
+  SaveSettings;
+
+  FSettings.Free;
+end;
 
 procedure TFRCMainForm.ActionRunExecute(Sender: TObject);
 begin
@@ -77,6 +95,29 @@ begin
     LAction.Enabled := True;
     Screen.Cursor := crDefault;
   end;
+end;
+
+procedure TFRCMainForm.FormShow(Sender: TObject);
+begin
+  LoadSettings;
+end;
+
+procedure TFRCMainForm.LoadSettings;
+begin
+  FSettings.LoadFromFile(SETTINGS_FILENAME);
+
+  EditReadOnlyCheck.Text := FSettings.ReadOnlyDirectoriesStr;
+  EditReadWrtiteChecks.Text := FSettings.ReadWriteDirectoriesStr;
+end;
+
+procedure TFRCMainForm.SaveSettings;
+begin
+  FSettings.Clear;
+
+  FSettings.AddReadOnlyDirectories(EditReadOnlyCheck.Text);
+  FSettings.AddReadWriteDirectories(EditReadWrtiteChecks.Text);
+
+  FSettings.SaveToFile(SETTINGS_FILENAME);
 end;
 
 end.

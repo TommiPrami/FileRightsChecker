@@ -3,7 +3,8 @@
 uses
   Vcl.Forms,
   FRCForm.Main in 'FRCForm.Main.pas' {FRCMainForm},
-  FRCUnit.FileRightsChecker in 'FRCUnit.FileRightsChecker.pas';
+  FRCUnit.FileRightsChecker in 'FRCUnit.FileRightsChecker.pas',
+  FRCUnit.Settings in 'FRCUnit.Settings.pas';
 
 {$R *.res}
 

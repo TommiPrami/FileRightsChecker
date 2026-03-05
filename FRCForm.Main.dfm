@@ -10,6 +10,9 @@ object FRCMainForm: TFRCMainForm
   Font.Height = -12
   Font.Name = 'Segoe UI'
   Font.Style = []
+  OnCreate = FormCreate
+  OnDestroy = FormDestroy
+  OnShow = FormShow
   TextHeight = 15
   object PanelButtons: TPanel
     Left = 819
