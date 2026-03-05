@@ -48,7 +48,6 @@ begin
     Result.Add(LStringValue);
 end;
 
-// Fills a TStringList from a TJSONArray
 procedure JSONArrayToStringList(const AArray: TJSONArray; const AList: TStringList);
 begin
   AList.Clear;
