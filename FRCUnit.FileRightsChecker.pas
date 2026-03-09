@@ -102,7 +102,7 @@ type
     function IsRunningElevated: Boolean;
     function ToLongPath(const ADirectory: string): string;
     function HasEmptyDACL(const ADirectory: string; var AErrorDescription: string): Boolean;
-    function IsPathUnderUACVirtualization(const ADirectory: string; var AErrorDescription: string): Boolean;
+    function IsDirectoryUnderUACVirtualization(const ADirectory: string; var AErrorDescription: string): Boolean;
     function HasPrivilege(const APrivilegeName: string; var AErrorDescription: string): Boolean;
     function IsReparsePoint(const ADirectory: string; var AErrorDescription: string): Boolean;
     function GetFileIntegrityLevel(const ADirectory: string; var AErrorDescription: string): string;
@@ -235,12 +235,20 @@ var
 begin
   Result := False;
 
-  if OpenProcessToken(GetCurrentProcess, TOKEN_QUERY, LTokenHandle) then
   try
-    if GetTokenInformation(LTokenHandle, TokenElevation, @LElevation, SizeOf(LElevation), LReturnLength) then
-      Result := LElevation.TokenIsElevated <> 0;
-  finally
-    CloseHandle(LTokenHandle);
+    if OpenProcessToken(GetCurrentProcess, TOKEN_QUERY, LTokenHandle) then
+    try
+      if GetTokenInformation(LTokenHandle, TokenElevation, @LElevation, SizeOf(LElevation), LReturnLength) then
+        Result := LElevation.TokenIsElevated <> 0;
+    finally
+      CloseHandle(LTokenHandle);
+    end;
+  except
+    on E: Exception do
+    begin
+      // TODO: Log Error
+      raise;
+    end;
   end;
 end;
 
@@ -339,9 +347,6 @@ begin
 end;
 
 procedure TFileRightsChecker.GetFilesAndDirs(const ADirectory: string; const AFiles, ADirectories: TStringList; const AClearLists: Boolean = True);
-var
-  LSearchRec: TSearchRec;
-  LPath: string;
 begin
   try
     if AClearLists then
@@ -350,8 +355,9 @@ begin
       ADirectories.Clear;
     end;
 
-    LPath := IncludeTrailingPathDelimiter(ADirectory);
+    var LPath := IncludeTrailingPathDelimiter(ADirectory);
 
+    var LSearchRec: TSearchRec;
     if FindFirst(LPath + '*', faAnyFile, LSearchRec) = 0 then
     try
       repeat
@@ -625,7 +631,7 @@ begin
   end;
 end;
 
-function TFileRightsChecker.IsPathUnderUACVirtualization(const ADirectory: string; var AErrorDescription: string): Boolean;
+function TFileRightsChecker.IsDirectoryUnderUACVirtualization(const ADirectory: string; var AErrorDescription: string): Boolean;
 var
   LVirtualStorePath: string;
   LSystemDrive: string;
@@ -659,7 +665,7 @@ begin
     end;
   except
     on E: Exception do
-      GetExceptionErrorDescription('IsPathUnderUACVirtualization', ADirectory, E, AErrorDescription);
+      GetExceptionErrorDescription('IsDirectoryUnderUACVirtualization', ADirectory, E, AErrorDescription);
   end;
 end;
 
@@ -890,7 +896,7 @@ begin
   begin
     var LErrorDescription: string := '';
 
-    if IsPathUnderUACVirtualization(LSubDirectory, LErrorDescription) then
+    if IsDirectoryUnderUACVirtualization(LSubDirectory, LErrorDescription) then
       LogError(LSubDirectory, frcUACVirtualization, LErrorDescription)
     else if ACheckWriteRights then
     begin
