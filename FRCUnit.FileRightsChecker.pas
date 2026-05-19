@@ -16,7 +16,7 @@ const
   SYSTEM_AUDIT_OBJECT_ACE_TYPE    = BYTE($7);
 
 type
-  TFileRightErrorType = (frcMissingPrivilege, frcFileNotReadable, frcFileNotWritable, frcUserHasNoExecuteRightsForFile,
+  TFileRightErrorType = (frcNone, frcMissingPrivilege, frcFileNotReadable, frcFileNotWritable, frcUserHasNoExecuteRightsForFile,
     frcIsReparsePoint, frcUACVirtualization, frcDirectoryNotReadable, frcDirectoryNotWritable);
 
   TACE_HEADER = record
@@ -53,8 +53,7 @@ type
     FErrorDescription: string;
     function GetErrorTypeStr: string;
   public
-    constructor Create(const AFileSystemItem: string; const AErrorType: TFileRightErrorType;
-      const AErrorDescription: string);
+    constructor Create(const AFileSystemItem: string; const AErrorType: TFileRightErrorType; const AErrorDescription: string);
 
     property FileSystemItem: string read FFileSystemItem;
     property ErrorType: TFileRightErrorType read FErrorType;
@@ -99,7 +98,7 @@ type
     function TestDirectoryWriteRights(const ADirectory: string; var AErrorDescription: string): Boolean;
     function TestExecuteRights(const AFileName: string; var AErrorDescription: string): Boolean;
     function TestOpenFileRights(const AFileName: string; const AInReadWriteMode: Boolean; var AErrorDescription: string): Boolean;
-    function IsRunningElevated: Boolean;
+    function IsRunningElevated(var AErrorDescription: string): Boolean;
     function ToLongPath(const ADirectory: string): string;
     function HasEmptyDACL(const ADirectory: string; var AErrorDescription: string): Boolean;
     function IsDirectoryUnderUACVirtualization(const ADirectory: string; var AErrorDescription: string): Boolean;
@@ -109,10 +108,11 @@ type
     function IsDirectoryEmpty(const ADirectory: string): Boolean;
     procedure CheckToAddMoreInfoForCreateFileFailure(const AErrorCode: DWORD; var AErrorDescription: string);
     procedure GetExceptionErrorDescription(const AErrorMethod, AFileSystemItem: string; const AException: Exception; var AErrorDescription: string);
-    procedure GetFilesAndDirs(const ADirectory: string; const AFiles, ADirectories: TStringList;  const AClearLists: Boolean = True);
+    procedure GetFilesAndDirs(const ADirectory: string; const AFiles, ADirectories: TStringList;  var AErrorDescription: string;
+      const AClearLists: Boolean = True);
     procedure LogError(const AFileSystemItem: string; const AErrorType: TFileRightErrorType; const AErrorDescription: string);
     procedure CheckProcessBackupPrivileges(const ADirectory: string);
-    procedure InitializeDirectoriesAndFiles(const ADirectory: string; const AFiles, ASubDirectories: TStringList);
+    procedure InitializeDirectoriesAndFiles(const ADirectory: string; const AFiles, ASubDirectories: TStringList; var AErrorDescription: string);
     procedure DoDirectoryChecks(const ADirectories: TStringList; const ACheckWriteRights: Boolean);
     procedure DoFileChecks(const AFiles: TStringList; const ACheckWriteRights: Boolean);
   public
@@ -137,13 +137,14 @@ end;
 
 { TFileRightsChecker }
 
-procedure TFileRightsChecker.InitializeDirectoriesAndFiles(const ADirectory: string; const AFiles, ASubDirectories: TStringList);
+procedure TFileRightsChecker.InitializeDirectoriesAndFiles(const ADirectory: string; const AFiles, ASubDirectories: TStringList;
+  var AErrorDescription: string);
 begin
   var LDirectories := ADirectory.Split([';']);
 
   for var LDirectory in LDirectories do
   begin
-    GetFilesAndDirs(LDirectory, AFiles, ASubDirectories, False);
+    GetFilesAndDirs(LDirectory, AFiles, ASubDirectories, AErrorDescription, False);
     ASubDirectories.Insert(0, LDirectory);
 
     if FCheckProcessBackupPrivileges then
@@ -156,6 +157,7 @@ var
   LSearchRec: TSearchRec;
 begin
   Result := True;
+
   if FindFirst(IncludeTrailingPathDelimiter(ADirectory) + '*', faAnyFile, LSearchRec) = 0 then
   try
     repeat
@@ -217,7 +219,6 @@ begin
 
         Result := True;
       end;
-
     finally
       FreeMem(LSecDesc);
     end;
@@ -227,7 +228,7 @@ begin
   end;
 end;
 
-function TFileRightsChecker.IsRunningElevated: Boolean;
+function TFileRightsChecker.IsRunningElevated(var AErrorDescription: string): Boolean;
 var
   LTokenHandle: THandle;
   LElevation: TOKEN_ELEVATION;
@@ -246,7 +247,7 @@ begin
   except
     on E: Exception do
     begin
-      // TODO: Log Error
+      GetExceptionErrorDescription('IsRunningElevated', '', E, AErrorDescription);
       raise;
     end;
   end;
@@ -270,8 +271,7 @@ begin
 
   try
     // First call to get required buffer size
-    GetFileSecurity(PChar(ToLongPath(ADirectory)), DACL_SECURITY_INFORMATION,
-      nil, 0, LBytesNeeded);
+    GetFileSecurity(PChar(ToLongPath(ADirectory)), DACL_SECURITY_INFORMATION, nil, 0, LBytesNeeded);
 
     if LBytesNeeded = 0 then
     begin
@@ -344,7 +344,7 @@ begin
 end;
 
 procedure TFileRightsChecker.GetFilesAndDirs(const ADirectory: string; const AFiles, ADirectories: TStringList;
-  const AClearLists: Boolean = True);
+  var AErrorDescription: string; const AClearLists: Boolean = True);
 begin
   try
     if AClearLists then
@@ -365,7 +365,7 @@ begin
         if (LSearchRec.Attr and faDirectory) <> 0 then
         begin
           ADirectories.Add(LPath + LSearchRec.Name);
-          GetFilesAndDirs(LPath + LSearchRec.Name, AFiles, ADirectories, False);  // recurse
+          GetFilesAndDirs(LPath + LSearchRec.Name, AFiles, ADirectories, AErrorDescription, False);  // recurse
         end
         else
           AFiles.Add(LPath + LSearchRec.Name);
@@ -376,10 +376,7 @@ begin
     end;
   except
     on E: Exception do
-    begin
-      // TODO: Log etc...
-      raise;
-    end;
+      GetExceptionErrorDescription('GetFilesAndDirs', ADirectory, E, AErrorDescription);
   end;
 end;
 
@@ -422,14 +419,7 @@ begin
 
   try
     // --- Create / Open ---
-    LFileHandle := CreateFile(
-      PChar(ToLongPath(LTempFile)),
-      GENERIC_WRITE,
-      0,
-      nil,
-      CREATE_NEW,
-      FILE_ATTRIBUTE_NORMAL,
-      0);
+    LFileHandle := CreateFile(PChar(ToLongPath(LTempFile)), GENERIC_WRITE, 0, nil, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, 0);
 
     if LFileHandle = INVALID_HANDLE_VALUE then
     begin
@@ -480,14 +470,8 @@ begin
   AErrorDescription := '';
 
   try
-    LDirHandle := CreateFile(
-      PChar(ToLongPath(ADirectory)),
-      GENERIC_READ,
-      FILE_SHARE_READ or FILE_SHARE_WRITE,
-      nil,
-      OPEN_EXISTING,
-      FILE_FLAG_BACKUP_SEMANTICS,  // required to open a directory handle
-      0);
+    LDirHandle := CreateFile(PChar(ToLongPath(ADirectory)), GENERIC_READ, FILE_SHARE_READ or FILE_SHARE_WRITE, nil, OPEN_EXISTING,
+      FILE_FLAG_BACKUP_SEMANTICS { required to open a directory handle },  0);
 
     if LDirHandle = INVALID_HANDLE_VALUE then
     begin
@@ -600,9 +584,17 @@ procedure TFileRightsChecker.Execute(const ADirectory: string; const ACheckWrite
 begin
   var LFiles := TStringList.Create;
   var LSubDirectories := TStringList.Create;
+  var LLocalErrorDescription: string := '';
 
   try
-    InitializeDirectoriesAndFiles(ADirectory, LFiles, LSubDirectories);
+    InitializeDirectoriesAndFiles(ADirectory, LFiles, LSubDirectories, LLocalErrorDescription);
+
+    if not LLocalErrorDescription.IsEmpty then
+    begin
+      LogError('', frcNone, LLocalErrorDescription);
+
+      Exit;
+    end;
 
     if LSubDirectories.Count >= 1 then
       DoDirectoryChecks(LSubDirectories, ACheckWriteRights);
@@ -624,7 +616,7 @@ begin
 
   try
     // Virtualization only applies to non-elevated 32-bit processes
-    if IsRunningElevated then
+    if IsRunningElevated(AErrorDescription) then
       Exit;
 
     if IsProcess64Bit then
@@ -641,7 +633,6 @@ begin
     // Only report if VirtualStore path actually exists and has content
     if DirectoryExists(LVirtualStorePath) and not IsDirectoryEmpty(LVirtualStorePath) then
     begin
-
       AErrorDescription := Format('Active UAC virtualization detected — files may be ' + 'redirected to: %s', [LVirtualStorePath]);
       Result := True;
     end;
@@ -839,7 +830,7 @@ procedure TFileRightsChecker.CheckToAddMoreInfoForCreateFileFailure(const AError
 begin
   if AErrorCode = ERROR_ACCESS_DENIED then
   begin
-    if IsRunningElevated then
+    if IsRunningElevated(AErrorDescription) then
       AErrorDescription := AErrorDescription + ' [Process IS elevated — likely explicit DENY ACE or EFS encryption]'
     else
       AErrorDescription := AErrorDescription
@@ -946,6 +937,7 @@ end;
 function TErrorItem.GetErrorTypeStr: string;
 begin
   case FErrorType of
+    frcNone: Result := '';
     frcMissingPrivilege: Result := 'Process is missing required privilege';
     frcFileNotReadable: Result := 'File not readable';
     frcFileNotWritable: Result := 'File not writable';
