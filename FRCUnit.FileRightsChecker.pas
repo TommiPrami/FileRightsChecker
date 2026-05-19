@@ -184,8 +184,7 @@ begin
 
   try
     // First call to get required buffer size
-    GetFileSecurity(PChar(ToLongPath(ADirectory)), DACL_SECURITY_INFORMATION,
-      nil, 0, LBytesNeeded);
+    GetFileSecurity(PChar(ToLongPath(ADirectory)), DACL_SECURITY_INFORMATION, nil, 0, LBytesNeeded);
 
     if LBytesNeeded = 0 then
     begin
@@ -194,20 +193,20 @@ begin
       Exit;
     end;
 
-    LSecDesc := AllocMem(LBytesNeeded);
+    LSecDesc := AllocMem(NativeInt(LBytesNeeded));
     try
       if not GetFileSecurity(PChar(ToLongPath(ADirectory)), DACL_SECURITY_INFORMATION,
          LSecDesc, LBytesNeeded, LBytesNeeded) then
       begin
-        AErrorDescription := Format('GetFileSecurity failed [%d]: %s',
-          [GetLastError, SysErrorMessage(GetLastError)]);
+        AErrorDescription := Format('GetFileSecurity failed [%d]: %s', [GetLastError, SysErrorMessage(GetLastError)]);
+
         Exit;
       end;
 
       if not GetSecurityDescriptorDacl(LSecDesc, LDACLPresent, LDACL, LDefaulted) then
       begin
-        AErrorDescription := Format('GetSecurityDescriptorDacl failed [%d]: %s',
-          [GetLastError, SysErrorMessage(GetLastError)]);
+        AErrorDescription := Format('GetSecurityDescriptorDacl failed [%d]: %s', [GetLastError, SysErrorMessage(GetLastError)]);
+
         Exit;
       end;
 
@@ -215,6 +214,7 @@ begin
       if LDACLPresent and (LDACL = nil) then
       begin
         AErrorDescription := 'Empty DACL detected — all access denied to everyone including Administrators';
+
         Result := True;
       end;
 
@@ -275,26 +275,25 @@ begin
 
     if LBytesNeeded = 0 then
     begin
-      AErrorDescription := Format('GetFileSecurity failed [%d]: %s',
-        [GetLastError, SysErrorMessage(GetLastError)]);
+      AErrorDescription := Format('GetFileSecurity failed [%d]: %s', [GetLastError, SysErrorMessage(GetLastError)]);
+
       Exit;
     end;
 
-    LSecDesc := AllocMem(LBytesNeeded);
+    LSecDesc := AllocMem(NativeInt(LBytesNeeded));
     try
       // Second call to get the actual security descriptor
-      if not GetFileSecurity(PChar(ToLongPath(ADirectory)), DACL_SECURITY_INFORMATION,
-         LSecDesc, LBytesNeeded, LBytesNeeded) then
+      if not GetFileSecurity(PChar(ToLongPath(ADirectory)), DACL_SECURITY_INFORMATION, LSecDesc, LBytesNeeded, LBytesNeeded) then
       begin
-        AErrorDescription := Format('GetFileSecurity failed [%d]: %s',
-          [GetLastError, SysErrorMessage(GetLastError)]);
+        AErrorDescription := Format('GetFileSecurity failed [%d]: %s', [GetLastError, SysErrorMessage(GetLastError)]);
+
         Exit;
       end;
 
       if not GetSecurityDescriptorDacl(LSecDesc, LDACLPresent, LDACL, LDefaulted) then
       begin
-        AErrorDescription := Format('GetSecurityDescriptorDacl failed [%d]: %s',
-          [GetLastError, SysErrorMessage(GetLastError)]);
+        AErrorDescription := Format('GetSecurityDescriptorDacl failed [%d]: %s', [GetLastError, SysErrorMessage(GetLastError)]);
+
         Exit;
       end;
 
@@ -305,8 +304,8 @@ begin
       // Get number of ACEs in the DACL
       if not GetAclInformation(LDACL^, @LAclSizeInfo, SizeOf(LAclSizeInfo), TAclInformationClass(AclSizeInformation)) then
       begin
-        AErrorDescription := Format('GetAclInformation failed [%d]: %s',
-          [GetLastError, SysErrorMessage(GetLastError)]);
+        AErrorDescription := Format('GetAclInformation failed [%d]: %s', [GetLastError, SysErrorMessage(GetLastError)]);
+
         Exit;
       end;
 
@@ -326,10 +325,8 @@ begin
           var LDomainNameLen: DWORD := SizeOf(LDomainName);
           var LSIDNameUse: SID_NAME_USE;
 
-          if LookupAccountSid(nil, @LAccessDeniedAce^.SidStart,
-             LSIDName, LSIDNameLen, LDomainName, LDomainNameLen, LSIDNameUse) then
-            AErrorDescription := AErrorDescription +
-              Format('DENY ACE found for: %s\%s  ', [LDomainName, LSIDName])
+          if LookupAccountSid(nil, @LAccessDeniedAce^.SidStart, LSIDName, LSIDNameLen, LDomainName, LDomainNameLen, LSIDNameUse) then
+            AErrorDescription := AErrorDescription + Format('DENY ACE found for: %s\%s  ', [LDomainName, LSIDName])
           else
             AErrorDescription := AErrorDescription + 'DENY ACE found for unknown SID  ';
 
@@ -346,7 +343,8 @@ begin
   end;
 end;
 
-procedure TFileRightsChecker.GetFilesAndDirs(const ADirectory: string; const AFiles, ADirectories: TStringList; const AClearLists: Boolean = True);
+procedure TFileRightsChecker.GetFilesAndDirs(const ADirectory: string; const AFiles, ADirectories: TStringList;
+  const AClearLists: Boolean = True);
 begin
   try
     if AClearLists then
@@ -447,8 +445,7 @@ begin
       // --- Write ---
       LData := 'FileRightsChecker test data';
 
-      if not WriteFile(LFileHandle, LData[1], Length(LData), LBytesWritten, nil)
-         or (LBytesWritten <> DWORD(Length(LData))) then
+      if not WriteFile(LFileHandle, LData[1], DWORD(Length(LData)), LBytesWritten, nil) or (LBytesWritten <> DWORD(Length(LData))) then
       begin
         LErrorCode := GetLastError;
         AErrorDescription := Format('WriteFile failed [%d]: %s', [LErrorCode, SysErrorMessage(LErrorCode)]);
@@ -495,8 +492,8 @@ begin
     if LDirHandle = INVALID_HANDLE_VALUE then
     begin
       LErrorCode := GetLastError;
-      AErrorDescription := Format('Directory read rights check failed [%d]: %s',
-        [LErrorCode, SysErrorMessage(LErrorCode)]);
+      AErrorDescription := Format('Directory read rights check failed [%d]: %s', [LErrorCode, SysErrorMessage(LErrorCode)]);
+
       Exit;
     end;
 
@@ -523,20 +520,12 @@ begin
       Exit;
     end;
 
-    LFileHandle := CreateFile(
-      PChar(ToLongPath(AFileName)),
-      GENERIC_EXECUTE,
-      FILE_SHARE_READ,
-      nil,
-      OPEN_EXISTING,
-      FILE_ATTRIBUTE_NORMAL,
-      0);
+    LFileHandle := CreateFile(PChar(ToLongPath(AFileName)), GENERIC_EXECUTE, FILE_SHARE_READ, nil, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
     try
       if LFileHandle = INVALID_HANDLE_VALUE then
       begin
         LErrorCode := GetLastError;
-        AErrorDescription := Format('Execute rights check failed [%d]: %s',
-          [LErrorCode, SysErrorMessage(LErrorCode)]);
+        AErrorDescription := Format('Execute rights check failed [%d]: %s', [LErrorCode, SysErrorMessage(LErrorCode)]);
 
         Exit;
       end;
@@ -568,19 +557,13 @@ begin
     else
       LAccessMode := GENERIC_READ;
 
-    LFileHandle := CreateFile(
-      PChar(ToLongPath(AFileName)),
-      LAccessMode,
-      FILE_SHARE_READ,
-      nil,
-      OPEN_EXISTING,
-      FILE_ATTRIBUTE_NORMAL,
-      0);
+    LFileHandle := CreateFile(PChar(ToLongPath(AFileName)), LAccessMode, FILE_SHARE_READ, nil, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
 
     if LFileHandle = INVALID_HANDLE_VALUE then
     begin
       LErrorCode := GetLastError;
       AErrorDescription := Format('OpenFile failed [%d]: %s', [LErrorCode, SysErrorMessage(LErrorCode)]);
+
       Exit;
     end;
 
@@ -653,14 +636,13 @@ begin
     if not ADirectory.StartsWith(LSystemDrive, True) then
       Exit;
 
-    LVirtualStorePath := GetEnvironmentVariable('LOCALAPPDATA') +
-      '\VirtualStore' + ADirectory.Substring(Length(LSystemDrive));
+    LVirtualStorePath := GetEnvironmentVariable('LOCALAPPDATA') + '\VirtualStore' + ADirectory.Substring(Length(LSystemDrive));
 
     // Only report if VirtualStore path actually exists and has content
     if DirectoryExists(LVirtualStorePath) and not IsDirectoryEmpty(LVirtualStorePath) then
     begin
-      AErrorDescription := Format('Active UAC virtualization detected — files may be ' +
-        'redirected to: %s', [LVirtualStorePath]);
+
+      AErrorDescription := Format('Active UAC virtualization detected — files may be ' + 'redirected to: %s', [LVirtualStorePath]);
       Result := True;
     end;
   except
@@ -684,16 +666,16 @@ begin
     if not OpenProcessToken(GetCurrentProcess, TOKEN_QUERY, LTokenHandle) then
     begin
       LErrorCode := GetLastError;
-      AErrorDescription := Format('OpenProcessToken failed [%d]: %s',
-        [LErrorCode, SysErrorMessage(LErrorCode)]);
+      AErrorDescription := Format('OpenProcessToken failed [%d]: %s', [LErrorCode, SysErrorMessage(LErrorCode)]);
+
       Exit;
     end;
     try
       if not LookupPrivilegeValue(nil, PChar(APrivilegeName), LLUID) then
       begin
         LErrorCode := GetLastError;
-        AErrorDescription := Format('LookupPrivilegeValue failed for "%s" [%d]: %s',
-          [APrivilegeName, LErrorCode, SysErrorMessage(LErrorCode)]);
+        AErrorDescription := Format('LookupPrivilegeValue failed for "%s" [%d]: %s', [APrivilegeName, LErrorCode, SysErrorMessage(LErrorCode)]);
+
         Exit;
       end;
 
@@ -705,8 +687,8 @@ begin
       if not PrivilegeCheck(LTokenHandle, LPrivilegeSet, LHasPrivilege) then
       begin
         LErrorCode := GetLastError;
-        AErrorDescription := Format('PrivilegeCheck failed [%d]: %s',
-          [LErrorCode, SysErrorMessage(LErrorCode)]);
+        AErrorDescription := Format('PrivilegeCheck failed [%d]: %s', [LErrorCode, SysErrorMessage(LErrorCode)]);
+
         Exit;
       end;
 
@@ -737,15 +719,16 @@ begin
     if LAttributes = INVALID_FILE_ATTRIBUTES then
     begin
       LErrorCode := GetLastError;
-      AErrorDescription := Format('GetFileAttributes failed [%d]: %s',
-        [LErrorCode, SysErrorMessage(LErrorCode)]);
+      AErrorDescription := Format('GetFileAttributes failed [%d]: %s', [LErrorCode, SysErrorMessage(LErrorCode)]);
+
       Exit;
     end;
 
     if (LAttributes and FILE_ATTRIBUTE_REPARSE_POINT) <> 0 then
     begin
-      AErrorDescription := Format('Path is a reparse point (junction or symlink) — ' +
-        'target location may have different access rights: %s', [ADirectory]);
+      AErrorDescription := Format('Path is a reparse point (junction or symlink) — ' + 'target location may have different access rights: %s',
+        [ADirectory]);
+
       Result := True;
     end;
   except
@@ -756,9 +739,8 @@ end;
 
 procedure TFileRightsChecker.GetExceptionErrorDescription(const AErrorMethod, AFileSystemItem: string; const AException: Exception; var AErrorDescription: string);
 begin
-  AErrorDescription := 'Exception ' + AException.ClassName + ' occurred at ' + AErrorMethod.QuotedString('"')
-    + ' with message: ' + AException.Message.QuotedString('"') + '. While checkinf file system item: '
-    + AFileSystemItem.QuotedString('"');
+  AErrorDescription := 'Exception ' + AException.ClassName + ' occurred at ' + AErrorMethod.QuotedString('"')  + ' with message: '
+    + AException.Message.QuotedString('"') + '. While checkinf file system item: ' + AFileSystemItem.QuotedString('"');
 end;
 
 function TFileRightsChecker.GetFileIntegrityLevel(const ADirectory: string; var AErrorDescription: string): string;
@@ -778,36 +760,34 @@ begin
   LBytesNeeded := 0;
 
   try
-    LFileHandle := CreateFile(PChar(ToLongPath(ADirectory)),
-      READ_CONTROL, FILE_SHARE_READ or FILE_SHARE_WRITE, nil, OPEN_EXISTING,
+    LFileHandle := CreateFile(PChar(ToLongPath(ADirectory)), READ_CONTROL, FILE_SHARE_READ or FILE_SHARE_WRITE, nil, OPEN_EXISTING,
       FILE_FLAG_BACKUP_SEMANTICS, 0);
 
     if LFileHandle = INVALID_HANDLE_VALUE then
     begin
       LErrorCode := GetLastError;
-      AErrorDescription := Format('CreateFile failed for integrity level check [%d]: %s',
-        [LErrorCode, SysErrorMessage(LErrorCode)]);
+      AErrorDescription := Format('CreateFile failed for integrity level check [%d]: %s', [LErrorCode, SysErrorMessage(LErrorCode)]);
+
       Exit;
     end;
     try
       // First call to get buffer size
-      GetKernelObjectSecurity(LFileHandle, LABEL_SECURITY_INFORMATION,
-        nil, 0, LBytesNeeded);
+      GetKernelObjectSecurity(LFileHandle, LABEL_SECURITY_INFORMATION, nil, 0, LBytesNeeded);
 
       if LBytesNeeded = 0 then
       begin
         Result := 'No integrity label — defaults to Medium';
+
         Exit;
       end;
 
-      LSecDesc := AllocMem(LBytesNeeded);
+      LSecDesc := AllocMem(NativeInt(LBytesNeeded));
       try
-        if not GetKernelObjectSecurity(LFileHandle, LABEL_SECURITY_INFORMATION,
-           LSecDesc, LBytesNeeded, LBytesNeeded) then
+        if not GetKernelObjectSecurity(LFileHandle, LABEL_SECURITY_INFORMATION, LSecDesc, LBytesNeeded, LBytesNeeded) then
         begin
           LErrorCode := GetLastError;
-          AErrorDescription := Format('GetKernelObjectSecurity failed [%d]: %s',
-            [LErrorCode, SysErrorMessage(LErrorCode)]);
+          AErrorDescription := Format('GetKernelObjectSecurity failed [%d]: %s', [LErrorCode, SysErrorMessage(LErrorCode)]);
+
           Exit;
         end;
 
@@ -825,8 +805,8 @@ begin
           $3000: Result := 'High';
           $4000: Result := 'System';
           $5000: Result := 'Protected Process';
-        else
-          Result := Format('Unknown (RID: 0x%.4x)', [LRID]);
+          else
+            Result := Format('Unknown (RID: 0x%.4x)', [LRID]);
         end;
 
       finally
@@ -860,17 +840,16 @@ begin
   if AErrorCode = ERROR_ACCESS_DENIED then
   begin
     if IsRunningElevated then
-      AErrorDescription := AErrorDescription +
-        ' [Process IS elevated — likely explicit DENY ACE or EFS encryption]'
+      AErrorDescription := AErrorDescription + ' [Process IS elevated — likely explicit DENY ACE or EFS encryption]'
     else
-      AErrorDescription := AErrorDescription +
-        ' [Process is NOT elevated — re-run as Administrator to confirm. If that succeeds, likely cause is UAC token filtering,'
+      AErrorDescription := AErrorDescription
+        + ' [Process is NOT elevated — re-run as Administrator to confirm. If that succeeds, likely cause is UAC token filtering,'
         + ' explicit DENY ACE, or EFS encryption]'
   end;
 end;
 
 constructor TFileRightsChecker.Create(const AOpenFilesLongFileAndPathNameSupport: Boolean = True;
-      const ACheckProcessBackupPrivileges: Boolean = False);
+  const ACheckProcessBackupPrivileges: Boolean = False);
 begin
   inherited Create;
 
