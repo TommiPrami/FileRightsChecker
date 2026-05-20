@@ -54,6 +54,8 @@ const
 procedure TFRCMainForm.FormCreate(Sender: TObject);
 begin
   FSettings := TFRCSettings.Create;
+
+  Caption := Caption + ' v' + GetExeFileVersion(3);
 end;
 
 procedure TFRCMainForm.FormDestroy(Sender: TObject);
