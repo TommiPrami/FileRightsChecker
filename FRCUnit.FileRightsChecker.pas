@@ -6,17 +6,17 @@ uses
   Winapi.Windows, System.SysUtils, System.Classes, System.Generics.Collections;
 
 const
-  ACCESS_ALLOWED_ACE_TYPE         = BYTE($0);
-  ACCESS_DENIED_ACE_TYPE          = BYTE($1);
-  SYSTEM_AUDIT_ACE_TYPE           = BYTE($2);
-  SYSTEM_ALARM_ACE_TYPE           = BYTE($3);
-  ACCESS_ALLOWED_COMPOUND_ACE_TYPE = BYTE($4);
-  ACCESS_ALLOWED_OBJECT_ACE_TYPE  = BYTE($5);
-  ACCESS_DENIED_OBJECT_ACE_TYPE   = BYTE($6);
-  SYSTEM_AUDIT_OBJECT_ACE_TYPE    = BYTE($7);
+  ACCESS_ALLOWED_ACE_TYPE         = Byte($0);
+  ACCESS_DENIED_ACE_TYPE          = Byte($1);
+  SYSTEM_AUDIT_ACE_TYPE           = Byte($2);
+  SYSTEM_ALARM_ACE_TYPE           = Byte($3);
+  ACCESS_ALLOWED_COMPOUND_ACE_TYPE = Byte($4);
+  ACCESS_ALLOWED_OBJECT_ACE_TYPE  = Byte($5);
+  ACCESS_DENIED_OBJECT_ACE_TYPE   = Byte($6);
+  SYSTEM_AUDIT_OBJECT_ACE_TYPE    = Byte($7);
 
   // ACE header flag: the ACE applies only to inherited children, not the object itself.
-  INHERIT_ONLY_ACE_FLAG           = BYTE($08);
+  INHERIT_ONLY_ACE_FLAG           = Byte($08);
 
 type
   TFileRightErrorType = (frcNone, frcMissingPrivilege, frcFileNotReadable, frcFileNotWritable, frcUserHasNoExecuteRightsForFile,
@@ -25,9 +25,9 @@ type
     frcShareModeConflict, frcEmptyDACL, frcExplicitDenyACE);
 
   TACE_HEADER = record
-    AceType:  BYTE;
-    AceFlags: BYTE;
-    AceSize:  WORD;
+    AceType:  Byte;
+    AceFlags: Byte;
+    AceSize:  Word;
   end;
   PACE_HEADER = ^TACE_HEADER;
 
@@ -97,6 +97,9 @@ type
     FReadWriteStatistics: TStatistics;
     FOpenFilesLongFileAndPathNameSupport: Boolean;
     FCheckProcessBackupPrivileges: Boolean;
+    FRunDirectoryGetEffectiveRightsShortfallTests: Boolean;
+    FRunFileGetEffectiveRightsShortfallTests: Boolean;
+    FRunCurrentUserIsOwnerTests: Boolean;
     function GetTempFileName(const ADirectory: string): string;
     function HasExplicitDenyACE(const ADirectory: string; var AErrorDescription: string): Boolean;
     function TestDirectoryReadRights(const ADirectory: string; var AErrorDescription: string): Boolean;
@@ -111,14 +114,12 @@ type
     function IsReparsePoint(const ADirectory: string; var AErrorDescription: string): Boolean;
     function GetFileIntegrityLevel(const ADirectory: string; var AErrorDescription: string): string;
     function IsDirectoryEmpty(const ADirectory: string): Boolean;
-    function DiagnoseFileShareModes(const AFileName: string; const AInReadWriteMode: Boolean;
-      var AErrorDescription: string): Boolean;
+    function DiagnoseFileShareModes(const AFileName: string; const AInReadWriteMode: Boolean; var AErrorDescription: string): Boolean;
     function HasReadOnlyAttribute(const APath: string; var AErrorDescription: string): Boolean;
     function IsEFSEncrypted(const APath: string; var AErrorDescription: string): Boolean;
     function IsOnNetworkShare(const APath: string; var AErrorDescription: string): Boolean;
     function CurrentUserIsOwner(const APath: string; var AErrorDescription: string): Boolean;
-    function GetEffectiveRightsShortfall(const APath: string; const ACheckWriteRights: Boolean;
-      var AErrorDescription: string): Boolean;
+    function GetEffectiveRightsShortfall(const APath: string; const ACheckWriteRights: Boolean; var AErrorDescription: string): Boolean;
     procedure CheckToAddMoreInfoForCreateFileFailure(const AErrorCode: DWORD; var AErrorDescription: string);
     procedure GetExceptionErrorDescription(const AErrorMethod, AFileSystemItem: string; const AException: Exception; var AErrorDescription: string);
     procedure GetFilesAndDirs(const ADirectory: string; const AFiles, ADirectories: TStringList;  var AErrorDescription: string;
@@ -129,13 +130,18 @@ type
     procedure DoDirectoryChecks(const ADirectories: TStringList; const ACheckWriteRights: Boolean);
     procedure DoFileChecks(const AFiles: TStringList; const ACheckWriteRights: Boolean);
   public
-    constructor Create(const AOpenFilesLongFileAndPathNameSupport: Boolean = True; const ACheckProcessBackupPrivileges: Boolean = False);
+    constructor Create(const AOpenFilesLongFileAndPathNameSupport: Boolean = True; const ACheckProcessBackupPrivileges: Boolean = False;
+      const ARunDirectoryGetEffectiveRightsShortfallTests: Boolean = False; const ARunFileGetEffectiveRightsShortfallTests: Boolean = False;
+      const ARunCurrentUserIsOwnerTests: Boolean = False);
     destructor Destroy; override;
 
     procedure Execute(const ADirectory: string; const ACheckWriteRights: Boolean);
     property Errors: TErrorItemCollection read FErrors;
     property ReadWriteStatistics: TStatistics read FReadWriteStatistics;
     property ReadOnlyStatistics: TStatistics read FReadOnlyStatistics;
+    property RunDirectoryGetEffectiveRightsShortfallTests: Boolean read FRunDirectoryGetEffectiveRightsShortfallTests write FRunDirectoryGetEffectiveRightsShortfallTests;
+    property RunFileGetEffectiveRightsShortfallTests: Boolean read FRunFileGetEffectiveRightsShortfallTests write FRunFileGetEffectiveRightsShortfallTests;
+    property RunCurrentUserIsOwnerTests: Boolean read FRunCurrentUserIsOwnerTests write FRunCurrentUserIsOwnerTests;
   end;
 
 implementation
@@ -1014,18 +1020,35 @@ begin
       begin
         LParts := '';
 
-        if (LMissing and FILE_READ_DATA)       <> 0 then LParts := LParts + 'FILE_READ_DATA ';
-        if (LMissing and FILE_WRITE_DATA)      <> 0 then LParts := LParts + 'FILE_WRITE_DATA ';
-        if (LMissing and FILE_APPEND_DATA)     <> 0 then LParts := LParts + 'FILE_APPEND_DATA ';
-        if (LMissing and FILE_READ_EA)         <> 0 then LParts := LParts + 'FILE_READ_EA ';
-        if (LMissing and FILE_WRITE_EA)        <> 0 then LParts := LParts + 'FILE_WRITE_EA ';
-        if (LMissing and FILE_READ_ATTRIBUTES) <> 0 then LParts := LParts + 'FILE_READ_ATTRIBUTES ';
-        if (LMissing and FILE_WRITE_ATTRIBUTES)<> 0 then LParts := LParts + 'FILE_WRITE_ATTRIBUTES ';
-        if (LMissing and READ_CONTROL)         <> 0 then LParts := LParts + 'READ_CONTROL ';
-        if (LMissing and SYNCHRONIZE)          <> 0 then LParts := LParts + 'SYNCHRONIZE ';
+        if (LMissing and FILE_READ_DATA) <> 0 then
+          LParts := LParts + 'FILE_READ_DATA ';
 
-        AErrorDescription := Format('Effective rights for current user missing: %s(mask: 0x%.8x)',
-          [LParts, LMissing]);
+        if (LMissing and FILE_WRITE_DATA) <> 0 then
+          LParts := LParts + 'FILE_WRITE_DATA ';
+
+        if (LMissing and FILE_APPEND_DATA) <> 0 then
+          LParts := LParts + 'FILE_APPEND_DATA ';
+
+        if (LMissing and FILE_READ_EA) <> 0 then
+          LParts := LParts + 'FILE_READ_EA ';
+
+        if (LMissing and FILE_WRITE_EA) <> 0 then
+          LParts := LParts + 'FILE_WRITE_EA ';
+
+        if (LMissing and FILE_READ_ATTRIBUTES) <> 0 then
+          LParts := LParts + 'FILE_READ_ATTRIBUTES ';
+
+        if (LMissing and FILE_WRITE_ATTRIBUTES) <> 0 then
+          LParts := LParts + 'FILE_WRITE_ATTRIBUTES ';
+
+        if (LMissing and READ_CONTROL) <> 0 then
+          LParts := LParts + 'READ_CONTROL ';
+
+        if (LMissing and SYNCHRONIZE) <> 0 then
+          LParts := LParts + 'SYNCHRONIZE ';
+
+        AErrorDescription := Format('Effective rights for current user missing: %s(mask: 0x%.8x)', [LParts, LMissing]);
+
         Result := True;
       end;
     finally
@@ -1311,12 +1334,13 @@ begin
     else
       AErrorDescription := AErrorDescription
         + ' [Process is NOT elevated — re-run as Administrator to confirm. If that succeeds, likely cause is UAC token filtering,'
-        + ' explicit DENY ACE, or EFS encryption]'
+        + ' explicit DENY ACE, or EFS encryption]';
   end;
 end;
 
-constructor TFileRightsChecker.Create(const AOpenFilesLongFileAndPathNameSupport: Boolean = True;
-  const ACheckProcessBackupPrivileges: Boolean = False);
+constructor TFileRightsChecker.Create(const AOpenFilesLongFileAndPathNameSupport: Boolean = True; const ACheckProcessBackupPrivileges: Boolean = False;
+  const ARunDirectoryGetEffectiveRightsShortfallTests: Boolean = False; const ARunFileGetEffectiveRightsShortfallTests: Boolean = False;
+  const ARunCurrentUserIsOwnerTests: Boolean = False);
 begin
   inherited Create;
 
@@ -1325,6 +1349,9 @@ begin
   FErrors := TErrorItemCollection.Create;
   FOpenFilesLongFileAndPathNameSupport := AOpenFilesLongFileAndPathNameSupport;
   FCheckProcessBackupPrivileges := ACheckProcessBackupPrivileges;
+  FRunDirectoryGetEffectiveRightsShortfallTests := ARunDirectoryGetEffectiveRightsShortfallTests;
+  FRunFileGetEffectiveRightsShortfallTests := ARunFileGetEffectiveRightsShortfallTests;
+  FRunCurrentUserIsOwnerTests := ARunCurrentUserIsOwnerTests;
 end;
 
 destructor TFileRightsChecker.Destroy;
@@ -1370,12 +1397,14 @@ begin
       LogError(LSubDirectory, frcExplicitDenyACE, LDesc);
 
     LDesc := '';
-    if not CurrentUserIsOwner(LSubDirectory, LDesc) and not LDesc.IsEmpty then
-      LogError(LSubDirectory, frcOwnershipMismatch, LDesc);
+    if FRunCurrentUserIsOwnerTests then
+      if not CurrentUserIsOwner(LSubDirectory, LDesc) and not LDesc.IsEmpty then
+        LogError(LSubDirectory, frcOwnershipMismatch, LDesc);
 
     LDesc := '';
-    if GetEffectiveRightsShortfall(LSubDirectory, ACheckWriteRights, LDesc) then // Slow
-      LogError(LSubDirectory, frcEffectiveRightsMissing, LDesc);
+    if FRunDirectoryGetEffectiveRightsShortfallTests then
+      if GetEffectiveRightsShortfall(LSubDirectory, ACheckWriteRights, LDesc) then
+        LogError(LSubDirectory, frcEffectiveRightsMissing, LDesc);
 
     LDesc := '';
     if IsDirectoryUnderUACVirtualization(LSubDirectory, LDesc) then
@@ -1433,12 +1462,14 @@ begin
       LogError(LCurrentFile, frcExplicitDenyACE, LDesc);
 
     LDesc := '';
-    if not CurrentUserIsOwner(LCurrentFile, LDesc) and not LDesc.IsEmpty then
-      LogError(LCurrentFile, frcOwnershipMismatch, LDesc);
+    if FRunCurrentUserIsOwnerTests then
+      if not CurrentUserIsOwner(LCurrentFile, LDesc) and not LDesc.IsEmpty then
+        LogError(LCurrentFile, frcOwnershipMismatch, LDesc);
 
     LDesc := '';
-    if GetEffectiveRightsShortfall(LCurrentFile, ACheckWriteRights, LDesc) then // Slow
-      LogError(LCurrentFile, frcEffectiveRightsMissing, LDesc);
+    if FRunFileGetEffectiveRightsShortfallTests then
+      if GetEffectiveRightsShortfall(LCurrentFile, ACheckWriteRights, LDesc) then
+        LogError(LCurrentFile, frcEffectiveRightsMissing, LDesc);
 
     LDesc := '';
     if DiagnoseFileShareModes(LCurrentFile, ACheckWriteRights, LDesc) then
@@ -1515,7 +1546,7 @@ end;
 
 procedure TErrorItemCollection.Add(const AItem: TErrorItem);
 begin
-  FErrorItems.Add(AItem)
+  FErrorItems.Add(AItem);
 end;
 
 function TErrorItemCollection.Count: Integer;

@@ -3,7 +3,7 @@ object FRCMainForm: TFRCMainForm
   Top = 0
   Caption = 'FRCMainForm'
   ClientHeight = 685
-  ClientWidth = 1031
+  ClientWidth = 1210
   Color = clBtnFace
   Font.Charset = DEFAULT_CHARSET
   Font.Color = clWindowText
@@ -15,9 +15,9 @@ object FRCMainForm: TFRCMainForm
   OnShow = FormShow
   TextHeight = 15
   object PanelButtons: TPanel
-    Left = 819
+    Left = 864
     Top = 0
-    Width = 212
+    Width = 346
     Height = 685
     Align = alRight
     BevelOuter = bvNone
@@ -27,7 +27,7 @@ object FRCMainForm: TFRCMainForm
       AlignWithMargins = True
       Left = 3
       Top = 8
-      Width = 206
+      Width = 340
       Height = 25
       Margins.Top = 8
       Action = ActionRun
@@ -38,7 +38,7 @@ object FRCMainForm: TFRCMainForm
       AlignWithMargins = True
       Left = 3
       Top = 46
-      Width = 206
+      Width = 340
       Height = 19
       Margins.Top = 10
       Align = alTop
@@ -47,21 +47,51 @@ object FRCMainForm: TFRCMainForm
       State = cbChecked
       TabOrder = 1
     end
-    object CheckBoxCheckProcessBackupPrivileges: TCheckBox
+    object CheckBoxProcessBackupPrivileges: TCheckBox
       AlignWithMargins = True
       Left = 3
       Top = 71
-      Width = 206
+      Width = 340
       Height = 19
       Align = alTop
       Caption = 'Check process backup privileges'
       TabOrder = 2
     end
+    object CheckBoxRunFileGetEffectiveRightsShortfallTests: TCheckBox
+      AlignWithMargins = True
+      Left = 3
+      Top = 121
+      Width = 340
+      Height = 19
+      Align = alTop
+      Caption = 'Run file GetEffectiveRightsShortfall tests (Slow)'
+      TabOrder = 3
+    end
+    object CheckBoxRunDirectoryGetEffectiveRightsShortfallTests: TCheckBox
+      AlignWithMargins = True
+      Left = 3
+      Top = 96
+      Width = 340
+      Height = 19
+      Align = alTop
+      Caption = 'Run directory GetEffectiveRightsShortfall tests (Slow)'
+      TabOrder = 4
+    end
+    object CheckBoxRunCurrentUserIsOwnerTests: TCheckBox
+      AlignWithMargins = True
+      Left = 3
+      Top = 146
+      Width = 340
+      Height = 19
+      Align = alTop
+      Caption = 'Run CurrentUserIsOwner tests (are basically false positives)'
+      TabOrder = 5
+    end
   end
   object PanelLeft: TPanel
     Left = 0
     Top = 0
-    Width = 819
+    Width = 864
     Height = 685
     Align = alClient
     BevelOuter = bvNone
@@ -71,7 +101,7 @@ object FRCMainForm: TFRCMainForm
       AlignWithMargins = True
       Left = 3
       Top = 3
-      Width = 813
+      Width = 858
       Height = 107
       Align = alTop
       BevelOuter = bvNone
@@ -81,7 +111,7 @@ object FRCMainForm: TFRCMainForm
         AlignWithMargins = True
         Left = 3
         Top = 63
-        Width = 807
+        Width = 852
         Height = 15
         Margins.Top = 8
         Align = alTop
@@ -91,7 +121,7 @@ object FRCMainForm: TFRCMainForm
         AlignWithMargins = True
         Left = 3
         Top = 8
-        Width = 807
+        Width = 852
         Height = 15
         Margins.Top = 8
         Align = alTop
@@ -101,7 +131,7 @@ object FRCMainForm: TFRCMainForm
         AlignWithMargins = True
         Left = 3
         Top = 29
-        Width = 807
+        Width = 852
         Height = 23
         Align = alTop
         TabOrder = 0
@@ -110,7 +140,7 @@ object FRCMainForm: TFRCMainForm
         AlignWithMargins = True
         Left = 3
         Top = 84
-        Width = 807
+        Width = 852
         Height = 23
         Align = alTop
         TabOrder = 1
@@ -119,7 +149,7 @@ object FRCMainForm: TFRCMainForm
     object PanelLog: TPanel
       Left = 0
       Top = 113
-      Width = 819
+      Width = 864
       Height = 572
       Align = alClient
       BevelOuter = bvNone
@@ -129,9 +159,10 @@ object FRCMainForm: TFRCMainForm
         AlignWithMargins = True
         Left = 3
         Top = 3
-        Width = 813
+        Width = 858
         Height = 566
         Align = alClient
+        ScrollBars = ssBoth
         TabOrder = 0
       end
     end

@@ -11,7 +11,6 @@ type
     ActionList: TActionList;
     ActionRun: TAction;
     ButtonRun: TButton;
-    CheckBoxCheckProcessBackupPrivileges: TCheckBox;
     CheckBoxOpenFilesLongFileAndPathNameSupport: TCheckBox;
     EditReadOnlyCheck: TEdit;
     EditReadWriteChecks: TEdit;
@@ -22,6 +21,10 @@ type
     PanelLeft: TPanel;
     PanelLog: TPanel;
     PanelTop: TPanel;
+    CheckBoxProcessBackupPrivileges: TCheckBox;
+    CheckBoxRunFileGetEffectiveRightsShortfallTests: TCheckBox;
+    CheckBoxRunDirectoryGetEffectiveRightsShortfallTests: TCheckBox;
+    CheckBoxRunCurrentUserIsOwnerTests: TCheckBox;
     procedure FormCreate(Sender: TObject);
     procedure FormDestroy(Sender: TObject);
     procedure ActionRunExecute(Sender: TObject);
@@ -30,6 +33,7 @@ type
     FSettings: TFRCSettings;
     procedure LoadSettings;
     procedure SaveSettings;
+    procedure Log(const ALogLine: string; const AIndent: Integer = 0);
   end;
 
 var
@@ -68,29 +72,30 @@ begin
   Application.ProcessMessages;
 
   var LFileAccessCheck := TFileRightsChecker.Create(CheckBoxOpenFilesLongFileAndPathNameSupport.Checked,
-    CheckBoxCheckProcessBackupPrivileges.Checked);
+    CheckBoxProcessBackupPrivileges.Checked, CheckBoxRunDirectoryGetEffectiveRightsShortfallTests.Checked,
+    CheckBoxRunFileGetEffectiveRightsShortfallTests.Checked, CheckBoxRunCurrentUserIsOwnerTests.Checked);
   try
     LFileAccessCheck.Execute(EditReadWriteChecks.Text, True);
     LFileAccessCheck.Execute(EditReadOnlyCheck.Text, False);
 
     if LFileAccessCheck.Errors.Count = 0 then
-      MemoLog.Lines.Add('No errors found')
+      Log('No errors found')
     else
     begin
       for var LIndex := 0 to LFileAccessCheck.Errors.Count - 1 do
       begin
         var LError := LFileAccessCheck.Errors[LIndex];
 
-        MemoLog.Lines.Add(LError.ErrorTypeStr + ' - '  + LError.FileSystemItem.QuotedString('"') + ' - With error: ' + LError.ErrorDescription)
+        Log(LError.ErrorTypeStr + '- '  + LError.FileSystemItem.QuotedString('"') + ' - With error: ' + LError.ErrorDescription, 1);
       end;
     end;
 
-    MemoLog.Lines.Add('Statistics:');
-    MemoLog.Lines.Add('  - ' + LFileAccessCheck.ReadOnlyStatistics.DirectoriesChecked.ToString + ' directories are readable (as should)');
-    MemoLog.Lines.Add('  - ' + LFileAccessCheck.ReadOnlyStatistics.FilesChecked.ToString + ' files could be opened in read only-mode');
-    MemoLog.Lines.Add('  - ' + LFileAccessCheck.ReadWriteStatistics.DirectoriesChecked.ToString + ' directories are writable (as should)');
-    MemoLog.Lines.Add('  - ' + LFileAccessCheck.ReadWriteStatistics.FilesChecked.ToString + ' files could be opened in read write-mode');
-    MemoLog.Lines.Add('  ');
+    Log('Statistics:');
+    Log('- ' + LFileAccessCheck.ReadOnlyStatistics.DirectoriesChecked.ToString + ' directories are readable (as should)', 1);
+    Log('- ' + LFileAccessCheck.ReadOnlyStatistics.FilesChecked.ToString + ' files could be opened in read only-mode', 1);
+    Log('- ' + LFileAccessCheck.ReadWriteStatistics.DirectoriesChecked.ToString + ' directories are writable (as should)', 1);
+    Log('- ' + LFileAccessCheck.ReadWriteStatistics.FilesChecked.ToString + ' files could be opened in read write-mode', 1);
+    Log('', 1);
   finally
     LFileAccessCheck.Free;
     LAction.Enabled := True;
@@ -109,6 +114,11 @@ begin
 
   EditReadOnlyCheck.Text := FSettings.ReadOnlyDirectoriesAsString;
   EditReadWriteChecks.Text := FSettings.ReadWriteDirectoriesAsString;
+end;
+
+procedure TFRCMainForm.Log(const ALogLine: string; const AIndent: Integer = 0);
+begin
+  MemoLog.Lines.Add(StringOfChar(' ', AIndent * 2) + ALogLine);
 end;
 
 procedure TFRCMainForm.SaveSettings;
