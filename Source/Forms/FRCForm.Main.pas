@@ -31,6 +31,7 @@ type
     procedure FormShow(Sender: TObject);
   strict private
     FSettings: TFRCSettings;
+    function GetExeFileVersion(const ASegments: Integer): string;
     procedure LoadSettings;
     procedure SaveSettings;
     procedure Log(const ALogLine: string; const AIndent: Integer = 0);
@@ -127,6 +128,56 @@ end;
 procedure TFRCMainForm.FormShow(Sender: TObject);
 begin
   LoadSettings;
+end;
+
+function TFRCMainForm.GetExeFileVersion(const ASegments: Integer): string;
+var
+  LExeName: string;
+  LDummyHandle: DWORD;
+  LInfoSize: DWORD;
+  LBuffer: TBytes;
+  LFixed: PVSFixedFileInfo;
+  LFixedLen: UINT;
+  LCount: Integer;
+begin
+  Result := '';
+
+  // Clamp the segment count to the documented 1..4 range so callers can't
+  // accidentally print "1.2.2.6.0..." or an empty string.
+  LCount := ASegments;
+  if LCount < 1 then
+    LCount := 1
+  else if LCount > 4 then
+    LCount := 4;
+
+  LExeName := ParamStr(0);
+  LInfoSize := GetFileVersionInfoSize(PChar(LExeName), LDummyHandle);
+  if LInfoSize = 0 then
+    Exit;
+
+  SetLength(LBuffer, LInfoSize);
+  if not GetFileVersionInfo(PChar(LExeName), 0, LInfoSize, LBuffer) then
+    Exit;
+
+  // '\' returns the root VS_FIXEDFILEINFO block — language-independent, which is
+  // what we want for the numeric version (the localized "FileVersion" string is
+  // a separate VarFileInfo subblock).
+  if not VerQueryValue(LBuffer, '\', Pointer(LFixed), LFixedLen) then
+    Exit;
+
+  // VS_FIXEDFILEINFO packs the four 16-bit components into two DWORDs:
+  //   dwFileVersionMS = (major << 16) | minor
+  //   dwFileVersionLS = (release << 16) | build
+  Result := IntToStr(HiWord(LFixed^.dwFileVersionMS));
+
+  if LCount >= 2 then
+    Result := Result + '.' + IntToStr(LoWord(LFixed^.dwFileVersionMS));
+
+  if LCount >= 3 then
+    Result := Result + '.' + IntToStr(HiWord(LFixed^.dwFileVersionLS));
+
+  if LCount >= 4 then
+    Result := Result + '.' + IntToStr(LoWord(LFixed^.dwFileVersionLS));
 end;
 
 procedure TFRCMainForm.LoadSettings;
