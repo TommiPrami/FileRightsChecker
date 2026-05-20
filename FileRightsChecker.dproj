@@ -115,14 +115,14 @@
         <DelphiCompile Include="$(MainSource)">
             <MainSource>MainSource</MainSource>
         </DelphiCompile>
-        <DCCReference Include="FRCForm.Main.pas">
+        <DCCReference Include="Source\Forms\FRCForm.Main.pas">
             <Form>FRCMainForm</Form>
         </DCCReference>
-        <DCCReference Include="FRCUnit.FileRightsChecker.pas"/>
-        <DCCReference Include="FRCUnit.Settings.pas"/>
-        <DCCReference Include="FRCUnit.WinAPI.pas"/>
-        <DCCReference Include="FRCUnit.ProgressThrottle.pas"/>
-        <DCCReference Include="FRCUnit.Statistics.pas"/>
+        <DCCReference Include="Source\Units\FRCUnit.FileRightsChecker.pas"/>
+        <DCCReference Include="Source\Units\FRCUnit.Settings.pas"/>
+        <DCCReference Include="Source\Units\FRCUnit.WinAPI.pas"/>
+        <DCCReference Include="Source\Units\FRCUnit.ProgressThrottle.pas"/>
+        <DCCReference Include="Source\Units\FRCUnit.Statistics.pas"/>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>
         </BuildConfiguration>

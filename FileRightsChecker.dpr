@@ -2,12 +2,12 @@
 
 uses
   Vcl.Forms,
-  FRCForm.Main in 'FRCForm.Main.pas' {FRCMainForm},
-  FRCUnit.FileRightsChecker in 'FRCUnit.FileRightsChecker.pas',
-  FRCUnit.Settings in 'FRCUnit.Settings.pas',
-  FRCUnit.WinAPI in 'FRCUnit.WinAPI.pas',
-  FRCUnit.ProgressThrottle in 'FRCUnit.ProgressThrottle.pas',
-  FRCUnit.Statistics in 'FRCUnit.Statistics.pas';
+  FRCForm.Main in 'Source\Forms\FRCForm.Main.pas' {FRCMainForm},
+  FRCUnit.FileRightsChecker in 'Source\Units\FRCUnit.FileRightsChecker.pas',
+  FRCUnit.Settings in 'Source\Units\FRCUnit.Settings.pas',
+  FRCUnit.WinAPI in 'Source\Units\FRCUnit.WinAPI.pas',
+  FRCUnit.ProgressThrottle in 'Source\Units\FRCUnit.ProgressThrottle.pas',
+  FRCUnit.Statistics in 'Source\Units\FRCUnit.Statistics.pas';
 
 {$R *.res}
 

@@ -1,4 +1,4 @@
-unit FRCUnit.Statistics;
+﻿unit FRCUnit.Statistics;
 
 // Result types produced by TFileRightsChecker — the error taxonomy, the per-error
 // record, the collection that holds them, and the simple run-level counters.

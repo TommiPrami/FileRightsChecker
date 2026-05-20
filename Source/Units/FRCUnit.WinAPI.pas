@@ -1,4 +1,4 @@
-unit FRCUnit.WinAPI;
+﻿unit FRCUnit.WinAPI;
 
 // Win32 / advapi32 declarations that either aren't exposed by Winapi.Windows /
 // Winapi.AccCtrl in all Delphi versions, or that are project-specific aliases.
