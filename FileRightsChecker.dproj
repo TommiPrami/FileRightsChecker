@@ -120,6 +120,7 @@
         </DCCReference>
         <DCCReference Include="FRCUnit.FileRightsChecker.pas"/>
         <DCCReference Include="FRCUnit.Settings.pas"/>
+        <DCCReference Include="FRCUnit.WinAPI.pas"/>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>
         </BuildConfiguration>
