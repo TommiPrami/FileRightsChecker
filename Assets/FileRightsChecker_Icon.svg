@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  FileRightsChecker icon.
+
+  Layered composition (back to front):
+    1. Folder tab + body (warm yellow)        -> "this tool is about files / directories"
+    2. Magnifying glass (steel ring + handle) -> "we inspect / diagnose"
+    3. Padlock inside the lens                -> "the inspected subject is permissions"
+
+  Designed on a 256x256 grid so an ICO export at 16/24/32/48/64/128/256
+  picks up cleanly. Strokes are thick on purpose so the silhouette holds
+  at 16x16 in a taskbar.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+
+  <!-- ============================================================
+       FOLDER
+       ============================================================ -->
+
+  <!-- Tab (the bit that sticks up on the left edge of the body).
+       Drawn as the "back" sheet so the front face sits on top of it. -->
+  <path d="M 26 62
+           L 96 62
+           L 116 86
+           L 230 86
+           L 230 96
+           L 26 96
+           Z"
+        fill="#C98A22" stroke="#6B4F0F" stroke-width="3" stroke-linejoin="round"/>
+
+  <!-- Folder body (front face). Rounded bottom corners; flat top so the
+       tab "tucks in" behind it. -->
+  <path d="M 26 90
+           L 230 90
+           L 230 208
+           Q 230 220 218 220
+           L 38 220
+           Q 26 220 26 208
+           Z"
+        fill="#F5C04B" stroke="#6B4F0F" stroke-width="3" stroke-linejoin="round"/>
+
+  <!-- Subtle highlight along the top edge of the folder face so it doesn't
+       read as a single flat slab. Skipped at very small icon sizes naturally
+       because it's only 2px thick. -->
+  <line x1="34" y1="96" x2="222" y2="96" stroke="#FFE3A1" stroke-width="2" stroke-linecap="round"/>
+
+  <!-- ============================================================
+       MAGNIFYING GLASS
+       Sitting top-right, partly overlapping the folder so it reads as
+       "looking at the folder", not as a separate object floating beside it.
+       ============================================================ -->
+
+  <!-- Handle.
+       Drawn first so the ring overlaps it cleanly at the joint. -->
+  <line x1="208" y1="142" x2="244" y2="182"
+        stroke="#2E3440" stroke-width="16" stroke-linecap="round"/>
+  <line x1="208" y1="142" x2="244" y2="182"
+        stroke="#4C566A" stroke-width="6" stroke-linecap="round"/>
+
+  <!-- Lens (the glass + ring).
+       Semi-transparent fill so a hint of the folder shows behind the lock. -->
+  <circle cx="166" cy="100" r="58"
+          fill="#E6F2FF" fill-opacity="0.92"
+          stroke="#2E3440" stroke-width="10"/>
+
+  <!-- A thin inner highlight for a glassy feel. Just a curve, not a full ring. -->
+  <path d="M 130 80 Q 138 64 158 60"
+        fill="none" stroke="#FFFFFF" stroke-width="4" stroke-linecap="round" stroke-opacity="0.85"/>
+
+  <!-- ============================================================
+       PADLOCK inside the lens
+       Centered on the lens so the visual reads "we're inspecting permissions".
+       ============================================================ -->
+
+  <!-- Shackle (the U-shape on top). Open at the bottom so it slots into the body. -->
+  <path d="M 150 92
+           L 150 80
+           Q 150 64 166 64
+           Q 182 64 182 80
+           L 182 92"
+        fill="none" stroke="#2E3440" stroke-width="8" stroke-linecap="round"/>
+
+  <!-- Lock body. -->
+  <rect x="142" y="92" width="48" height="40" rx="5"
+        fill="#2E3440" stroke="#1A1F27" stroke-width="2"/>
+
+  <!-- Keyhole — circle plus a short tail. Uses the folder's yellow so it
+       feels intentionally linked to the subject of the inspection. -->
+  <circle cx="166" cy="108" r="4" fill="#F5C04B"/>
+  <rect x="164" y="108" width="4" height="12" fill="#F5C04B"/>
+
+</svg>
