@@ -45,7 +45,7 @@ implementation
 {$R *.dfm}
 
 uses
-  FRCUnit.FileRightsChecker, FRCUnit.ProgressThrottle;
+  FRCUnit.FileRightsChecker, FRCUnit.ProgressThrottle, FRCUnit.Statistics;
 
 const
   SETTINGS_FILENAME = 'FRCSettings.json';

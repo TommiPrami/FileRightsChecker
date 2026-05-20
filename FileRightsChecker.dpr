@@ -6,7 +6,8 @@ uses
   FRCUnit.FileRightsChecker in 'FRCUnit.FileRightsChecker.pas',
   FRCUnit.Settings in 'FRCUnit.Settings.pas',
   FRCUnit.WinAPI in 'FRCUnit.WinAPI.pas',
-  FRCUnit.ProgressThrottle in 'FRCUnit.ProgressThrottle.pas';
+  FRCUnit.ProgressThrottle in 'FRCUnit.ProgressThrottle.pas',
+  FRCUnit.Statistics in 'FRCUnit.Statistics.pas';
 
 {$R *.res}
 

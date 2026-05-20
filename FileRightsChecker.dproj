@@ -122,6 +122,7 @@
         <DCCReference Include="FRCUnit.Settings.pas"/>
         <DCCReference Include="FRCUnit.WinAPI.pas"/>
         <DCCReference Include="FRCUnit.ProgressThrottle.pas"/>
+        <DCCReference Include="FRCUnit.Statistics.pas"/>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>
         </BuildConfiguration>
