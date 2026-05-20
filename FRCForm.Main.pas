@@ -34,6 +34,7 @@ type
     procedure LoadSettings;
     procedure SaveSettings;
     procedure Log(const ALogLine: string; const AIndent: Integer = 0);
+    procedure ShowProgress(const AProgressText: string);
   end;
 
 var
@@ -44,7 +45,7 @@ implementation
 {$R *.dfm}
 
 uses
-  FRCUnit.FileRightsChecker;
+  FRCUnit.FileRightsChecker, FRCUnit.ProgressThrottle;
 
 const
   SETTINGS_FILENAME = 'FRCSettings.json';
@@ -67,6 +68,7 @@ begin
 
   LAction.Enabled := False;
   Screen.Cursor := crHourGlass;
+  MemoLog.Clear;
 
   // Time to refresh the screen, most likely not needed.
   Application.ProcessMessages;
@@ -74,9 +76,18 @@ begin
   var LFileAccessCheck := TFileRightsChecker.Create(CheckBoxOpenFilesLongFileAndPathNameSupport.Checked,
     CheckBoxProcessBackupPrivileges.Checked, CheckBoxRunDirectoryGetEffectiveRightsShortfallTests.Checked,
     CheckBoxRunFileGetEffectiveRightsShortfallTests.Checked, CheckBoxRunCurrentUserIsOwnerTests.Checked);
+  // Hand the throttle the current caption — it will prepend it to every progress
+  // update and restore the bare caption once 100% is reached.
+  var LThrottle := TProgressThrottle.Create(Caption);
   try
-    LFileAccessCheck.Execute(EditReadWriteChecks.Text, True);
-    LFileAccessCheck.Execute(EditReadOnlyCheck.Text, False);
+    LThrottle.OnShowProgress := ShowProgress;
+    LFileAccessCheck.OnTest := LThrottle.HandleTest;
+
+    // Queue both passes first so RunPreparedPasses can see the full picture and
+    // emit one continuous 0..100% sweep with cumulative test and error counts.
+    LFileAccessCheck.PreparePass(EditReadWriteChecks.Text, True);
+    LFileAccessCheck.PreparePass(EditReadOnlyCheck.Text, False);
+    LFileAccessCheck.RunPreparedPasses;
 
     if LFileAccessCheck.Errors.Count = 0 then
       Log('No errors found')
@@ -97,10 +108,20 @@ begin
     Log('- ' + LFileAccessCheck.ReadWriteStatistics.FilesChecked.ToString + ' files could be opened in read write-mode', 1);
     Log('', 1);
   finally
+    LThrottle.Free;
     LFileAccessCheck.Free;
     LAction.Enabled := True;
     Screen.Cursor := crDefault;
   end;
+end;
+
+procedure TFRCMainForm.ShowProgress(const AProgressText: string);
+begin
+  // Throttler decides cadence and supplies the full text (caption prefix already
+  // included). We just paint it on the title bar and pump messages so the form
+  // stays responsive during long scans on the UI thread.
+  Caption := AProgressText;
+  Application.ProcessMessages;
 end;
 
 procedure TFRCMainForm.FormShow(Sender: TObject);

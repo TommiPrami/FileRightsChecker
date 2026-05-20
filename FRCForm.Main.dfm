@@ -1,7 +1,7 @@
 object FRCMainForm: TFRCMainForm
   Left = 0
   Top = 0
-  Caption = 'FRCMainForm'
+  Caption = 'Fire Righst Checker'
   ClientHeight = 685
   ClientWidth = 1210
   Color = clBtnFace

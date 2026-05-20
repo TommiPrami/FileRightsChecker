@@ -11,6 +11,19 @@ type
     frcReadOnlyAttribute, frcOwnershipMismatch, frcEffectiveRightsMissing, frcEFSEncrypted, frcNetworkShare,
     frcShareModeConflict, frcEmptyDACL, frcExplicitDenyACE);
 
+  // There is no clean RTL/WinAPI "is this a file or a directory" enum — Win32 only has
+  // the FILE_ATTRIBUTE_DIRECTORY bit and the RTL exposes it as the faDirectory flag.
+  // A two-value enum is clearer at call sites than a flag check.
+  TFileSystemType = (fstDirectory, fstFile);
+
+  // Fired once when the checker starts processing a file or directory.
+  TFileSystemItemCallBack = procedure(const AType: TFileSystemType; const AName: string) of object;
+
+  // Fired after each individual test (each diagnostic call) completes. AErrorsCount is
+  // the running total of errors logged so far; AProgress is 0.0 .. 100.0.
+  TTestCallBack = procedure(const AType: TFileSystemType; const AName: string;
+    const ATestCount: Integer; const AErrorsCount: Integer; const AProgress: Double) of object;
+
   TErrorItem = class(TObject)
   strict private
     FFileSystemItem: string;
@@ -50,6 +63,22 @@ type
     property DirectoriesChecked: Integer read FDirectoriesChecked;
   end;
 
+  // Internal: holds the result of a single PreparePass call. Owns its TStringLists;
+  // RunPreparedPasses iterates these without touching disk for enumeration.
+  TPreparedPass = class(TObject)
+  strict private
+    FFiles: TStringList;
+    FSubDirectories: TStringList;
+    FCheckWriteRights: Boolean;
+  public
+    constructor Create(const ACheckWriteRights: Boolean);
+    destructor Destroy; override;
+
+    property Files: TStringList read FFiles;
+    property SubDirectories: TStringList read FSubDirectories;
+    property CheckWriteRights: Boolean read FCheckWriteRights;
+  end;
+
   TFileRightsChecker = class(TObject)
   strict private
     FErrors: TErrorItemCollection;
@@ -60,6 +89,11 @@ type
     FRunDirectoryGetEffectiveRightsShortfallTests: Boolean;
     FRunFileGetEffectiveRightsShortfallTests: Boolean;
     FRunCurrentUserIsOwnerTests: Boolean;
+    FOnFileSystemItem: TFileSystemItemCallBack;
+    FOnTest: TTestCallBack;
+    FTotalTestsPlanned: Integer;
+    FTestsExecuted: Integer;
+    FPreparedPasses: TObjectList<TPreparedPass>;
     function GetTempFileName(const ADirectory: string): string;
     function HasExplicitDenyACE(const ADirectory: string; var AErrorDescription: string): Boolean;
     function TestDirectoryReadRights(const ADirectory: string; var AErrorDescription: string): Boolean;
@@ -89,6 +123,10 @@ type
     procedure InitializeDirectoriesAndFiles(const ADirectory: string; const AFiles, ASubDirectories: TStringList; var AErrorDescription: string);
     procedure DoDirectoryChecks(const ADirectories: TStringList; const ACheckWriteRights: Boolean);
     procedure DoFileChecks(const AFiles: TStringList; const ACheckWriteRights: Boolean);
+    function PerDirectoryTestCount: Integer;
+    function PerFileTestCount: Integer;
+    procedure ReportItem(const AType: TFileSystemType; const AName: string);
+    procedure ReportTest(const AType: TFileSystemType; const AName: string);
   public
     constructor Create(const AOpenFilesLongFileAndPathNameSupport: Boolean = True; const ACheckProcessBackupPrivileges: Boolean = False;
       const ARunDirectoryGetEffectiveRightsShortfallTests: Boolean = False; const ARunFileGetEffectiveRightsShortfallTests: Boolean = False;
@@ -96,12 +134,22 @@ type
     destructor Destroy; override;
 
     procedure Execute(const ADirectory: string; const ACheckWriteRights: Boolean);
+
+    // Cumulative-progress API: call PreparePass once per (path, write-mode) pass,
+    // then RunPreparedPasses. The total test count is summed across all passes so the
+    // progress callback emits a single continuous 0..100% sweep with running test
+    // and error totals.
+    procedure PreparePass(const ADirectory: string; const ACheckWriteRights: Boolean);
+    procedure RunPreparedPasses;
+
     property Errors: TErrorItemCollection read FErrors;
     property ReadWriteStatistics: TStatistics read FReadWriteStatistics;
     property ReadOnlyStatistics: TStatistics read FReadOnlyStatistics;
     property RunDirectoryGetEffectiveRightsShortfallTests: Boolean read FRunDirectoryGetEffectiveRightsShortfallTests write FRunDirectoryGetEffectiveRightsShortfallTests;
     property RunFileGetEffectiveRightsShortfallTests: Boolean read FRunFileGetEffectiveRightsShortfallTests write FRunFileGetEffectiveRightsShortfallTests;
     property RunCurrentUserIsOwnerTests: Boolean read FRunCurrentUserIsOwnerTests write FRunCurrentUserIsOwnerTests;
+    property OnFileSystemItem: TFileSystemItemCallBack read FOnFileSystemItem write FOnFileSystemItem;
+    property OnTest: TTestCallBack read FOnTest write FOnTest;
   end;
 
 implementation
@@ -1029,21 +1077,117 @@ end;
 
 procedure TFileRightsChecker.Execute(const ADirectory: string; const ACheckWriteRights: Boolean);
 begin
-  var LFiles := TStringList.Create;
-  var LSubDirectories := TStringList.Create;
-  var LLocalErrorDescription: string := '';
+  // Single-pass convenience wrapper: clear any queued passes, prepare this one, run.
+  // Use PreparePass + RunPreparedPasses directly when you need cumulative progress
+  // across multiple passes (e.g. RW + RO in one continuous sweep).
+  FPreparedPasses.Clear;
+  PreparePass(ADirectory, ACheckWriteRights);
+  RunPreparedPasses;
+end;
 
-  try
-    InitializeDirectoriesAndFiles(ADirectory, LFiles, LSubDirectories, LLocalErrorDescription);
-
-    if LSubDirectories.Count >= 1 then
-      DoDirectoryChecks(LSubDirectories, ACheckWriteRights);
-
-    DoFileChecks(LFiles, ACheckWriteRights);
-  finally
-    LFiles.Free;
-    LSubDirectories.Free;
+procedure TFileRightsChecker.PreparePass(const ADirectory: string; const ACheckWriteRights: Boolean);
+begin
+  // Starting a fresh batch — first PreparePass after a RunPreparedPasses (or after
+  // construction) zeroes the progress counters before accumulating.
+  if FPreparedPasses.Count = 0 then
+  begin
+    FTotalTestsPlanned := 0;
+    FTestsExecuted := 0;
   end;
+
+  var LPass := TPreparedPass.Create(ACheckWriteRights);
+  try
+    var LLocalErrorDescription: string := '';
+    InitializeDirectoriesAndFiles(ADirectory, LPass.Files, LPass.SubDirectories, LLocalErrorDescription);
+
+    Inc(FTotalTestsPlanned,
+      LPass.SubDirectories.Count * PerDirectoryTestCount + LPass.Files.Count * PerFileTestCount);
+
+    FPreparedPasses.Add(LPass);
+    LPass := nil; // ownership transferred
+  finally
+    LPass.Free; // no-op if transferred
+  end;
+end;
+
+procedure TFileRightsChecker.RunPreparedPasses;
+begin
+  try
+    for var LPass in FPreparedPasses do
+    begin
+      if LPass.SubDirectories.Count >= 1 then
+        DoDirectoryChecks(LPass.SubDirectories, LPass.CheckWriteRights);
+
+      DoFileChecks(LPass.Files, LPass.CheckWriteRights);
+    end;
+
+    // Guarantee a final 100% notification across the whole batch even if rounding
+    // or skipped sub-tests left the counter a hair short.
+    if (FTotalTestsPlanned > 0) and (FTestsExecuted < FTotalTestsPlanned) then
+    begin
+      FTestsExecuted := FTotalTestsPlanned;
+      if Assigned(FOnTest) then
+        FOnTest(fstFile, '', FTestsExecuted, FErrors.Count, 100.0);
+    end;
+  finally
+    // Drop the prepared passes so the next PreparePass call starts a fresh batch.
+    // Counters stay as-is so callers can read final state right after RunPreparedPasses.
+    FPreparedPasses.Clear;
+  end;
+end;
+
+function TFileRightsChecker.PerDirectoryTestCount: Integer;
+begin
+  // Must match the number of ReportTest calls in DoDirectoryChecks.
+  // 8 unconditional + up to 2 gated.
+  Result := 8;
+
+  if FRunCurrentUserIsOwnerTests then
+    Inc(Result);
+
+  if FRunDirectoryGetEffectiveRightsShortfallTests then
+    Inc(Result);
+end;
+
+function TFileRightsChecker.PerFileTestCount: Integer;
+begin
+  // Must match the number of ReportTest calls in DoFileChecks.
+  // 8 unconditional + up to 2 gated. (TestExecuteRights / GetFileIntegrityLevel are
+  // sub-steps of the primary access probe and don't count separately.)
+  Result := 8;
+
+  if FRunCurrentUserIsOwnerTests then
+    Inc(Result);
+
+  if FRunFileGetEffectiveRightsShortfallTests then
+    Inc(Result);
+end;
+
+procedure TFileRightsChecker.ReportItem(const AType: TFileSystemType; const AName: string);
+begin
+  if Assigned(FOnFileSystemItem) then
+    FOnFileSystemItem(AType, AName);
+end;
+
+procedure TFileRightsChecker.ReportTest(const AType: TFileSystemType; const AName: string);
+var
+  LProgress: Double;
+begin
+  Inc(FTestsExecuted);
+
+  if not Assigned(FOnTest) then
+    Exit;
+
+  if FTotalTestsPlanned > 0 then
+    LProgress := (FTestsExecuted / FTotalTestsPlanned) * 100.0
+  else
+    LProgress := 0;
+
+  // Defensive clamp — nested or unaccounted tests can push us over briefly.
+  if LProgress > 100.0 then
+    LProgress := 100.0;
+
+  FOnTest(AType, AName, FTestsExecuted, FErrors.Count, LProgress);
 end;
 
 function TFileRightsChecker.IsDirectoryUnderUACVirtualization(const ADirectory: string; var AErrorDescription: string): Boolean;
@@ -1286,6 +1430,7 @@ begin
   FReadOnlyStatistics := TStatistics.Create;
   FReadWriteStatistics := TStatistics.Create;
   FErrors := TErrorItemCollection.Create;
+  FPreparedPasses := TObjectList<TPreparedPass>.Create(True);
   FOpenFilesLongFileAndPathNameSupport := AOpenFilesLongFileAndPathNameSupport;
   FCheckProcessBackupPrivileges := ACheckProcessBackupPrivileges;
   FRunDirectoryGetEffectiveRightsShortfallTests := ARunDirectoryGetEffectiveRightsShortfallTests;
@@ -1295,6 +1440,7 @@ end;
 
 destructor TFileRightsChecker.Destroy;
 begin
+  FPreparedPasses.Free;
   FErrors.Free;
   FReadOnlyStatistics.Free;
   FReadWriteStatistics.Free;
@@ -1309,45 +1455,63 @@ begin
     // Each diagnostic is independent and logs its own error type. Fine-grained on purpose:
     // a single directory can be on a network share, read-only, AND have an explicit deny —
     // we want all three reported, not just the first match.
+    //
+    // Each diagnostic is followed by ReportTest so progress accounting stays in lockstep
+    // with PerDirectoryTestCount.
+
+    ReportItem(fstDirectory, LSubDirectory);
 
     var LDesc: string := '';
 
     if IsOnNetworkShare(LSubDirectory, LDesc) then
       LogError(LSubDirectory, frcNetworkShare, LDesc);
+    ReportTest(fstDirectory, LSubDirectory);
 
     LDesc := '';
     if IsReparsePoint(LSubDirectory, LDesc) then
       LogError(LSubDirectory, frcIsReparsePoint, LDesc);
+    ReportTest(fstDirectory, LSubDirectory);
 
     LDesc := '';
     if HasReadOnlyAttribute(LSubDirectory, LDesc) then
       LogError(LSubDirectory, frcReadOnlyAttribute, LDesc);
+    ReportTest(fstDirectory, LSubDirectory);
 
     LDesc := '';
     if IsEFSEncrypted(LSubDirectory, LDesc) then
       LogError(LSubDirectory, frcEFSEncrypted, LDesc);
+    ReportTest(fstDirectory, LSubDirectory);
 
     LDesc := '';
     if HasEmptyDACL(LSubDirectory, LDesc) then
       LogError(LSubDirectory, frcEmptyDACL, LDesc);
+    ReportTest(fstDirectory, LSubDirectory);
 
     LDesc := '';
     if HasExplicitDenyACE(LSubDirectory, LDesc) then
       LogError(LSubDirectory, frcExplicitDenyACE, LDesc);
+    ReportTest(fstDirectory, LSubDirectory);
 
-    LDesc := '';
     if FRunCurrentUserIsOwnerTests then
+    begin
+      LDesc := '';
       if not CurrentUserIsOwner(LSubDirectory, LDesc) and not LDesc.IsEmpty then
         LogError(LSubDirectory, frcOwnershipMismatch, LDesc);
+      ReportTest(fstDirectory, LSubDirectory);
+    end;
 
-    LDesc := '';
     if FRunDirectoryGetEffectiveRightsShortfallTests then
+    begin
+      LDesc := '';
       if GetEffectiveRightsShortfall(LSubDirectory, ACheckWriteRights, LDesc) then
         LogError(LSubDirectory, frcEffectiveRightsMissing, LDesc);
+      ReportTest(fstDirectory, LSubDirectory);
+    end;
 
     LDesc := '';
     if IsDirectoryUnderUACVirtualization(LSubDirectory, LDesc) then
       LogError(LSubDirectory, frcUACVirtualization, LDesc);
+    ReportTest(fstDirectory, LSubDirectory);
 
     // Primary access probe — drives the readable/writable statistic.
     LDesc := '';
@@ -1365,6 +1529,7 @@ begin
       else
         FReadOnlyStatistics.AddCheckedDirectory;
     end;
+    ReportTest(fstDirectory, LSubDirectory);
   end;
 end;
 
@@ -1374,45 +1539,62 @@ begin
   begin
     // Same approach as DoDirectoryChecks: each diagnostic gets its own LogError so the
     // operator sees every cause that applies, not just the first.
+    //
+    // Each ReportTest call must be matched by PerFileTestCount to keep progress in sync.
+
+    ReportItem(fstFile, LCurrentFile);
 
     var LDesc: string := '';
 
     if IsOnNetworkShare(LCurrentFile, LDesc) then
       LogError(LCurrentFile, frcNetworkShare, LDesc);
+    ReportTest(fstFile, LCurrentFile);
 
     LDesc := '';
     if IsReparsePoint(LCurrentFile, LDesc) then
       LogError(LCurrentFile, frcIsReparsePoint, LDesc);
+    ReportTest(fstFile, LCurrentFile);
 
     LDesc := '';
     if HasReadOnlyAttribute(LCurrentFile, LDesc) then
       LogError(LCurrentFile, frcReadOnlyAttribute, LDesc);
+    ReportTest(fstFile, LCurrentFile);
 
     LDesc := '';
     if IsEFSEncrypted(LCurrentFile, LDesc) then
       LogError(LCurrentFile, frcEFSEncrypted, LDesc);
+    ReportTest(fstFile, LCurrentFile);
 
     LDesc := '';
     if HasEmptyDACL(LCurrentFile, LDesc) then
       LogError(LCurrentFile, frcEmptyDACL, LDesc);
+    ReportTest(fstFile, LCurrentFile);
 
     LDesc := '';
     if HasExplicitDenyACE(LCurrentFile, LDesc) then
       LogError(LCurrentFile, frcExplicitDenyACE, LDesc);
+    ReportTest(fstFile, LCurrentFile);
 
-    LDesc := '';
     if FRunCurrentUserIsOwnerTests then
+    begin
+      LDesc := '';
       if not CurrentUserIsOwner(LCurrentFile, LDesc) and not LDesc.IsEmpty then
         LogError(LCurrentFile, frcOwnershipMismatch, LDesc);
+      ReportTest(fstFile, LCurrentFile);
+    end;
 
-    LDesc := '';
     if FRunFileGetEffectiveRightsShortfallTests then
+    begin
+      LDesc := '';
       if GetEffectiveRightsShortfall(LCurrentFile, ACheckWriteRights, LDesc) then
         LogError(LCurrentFile, frcEffectiveRightsMissing, LDesc);
+      ReportTest(fstFile, LCurrentFile);
+    end;
 
     LDesc := '';
     if DiagnoseFileShareModes(LCurrentFile, ACheckWriteRights, LDesc) then
       LogError(LCurrentFile, frcShareModeConflict, LDesc);
+    ReportTest(fstFile, LCurrentFile);
 
     // Primary access probe — drives the readable/writable statistic and triggers
     // the "additional info" follow-ups below if it fails.
@@ -1442,6 +1624,7 @@ begin
       FReadWriteStatistics.AddCheckedFile
     else
       FReadOnlyStatistics.AddCheckedFile;
+    ReportTest(fstFile, LCurrentFile);
   end;
 end;
 
@@ -1522,6 +1705,25 @@ end;
 procedure TStatistics.AddCheckedFile;
 begin
   Inc(FFilesChecked);
+end;
+
+{ TPreparedPass }
+
+constructor TPreparedPass.Create(const ACheckWriteRights: Boolean);
+begin
+  inherited Create;
+
+  FFiles := TStringList.Create;
+  FSubDirectories := TStringList.Create;
+  FCheckWriteRights := ACheckWriteRights;
+end;
+
+destructor TPreparedPass.Destroy;
+begin
+  FFiles.Free;
+  FSubDirectories.Free;
+
+  inherited Destroy;
 end;
 
 end.
