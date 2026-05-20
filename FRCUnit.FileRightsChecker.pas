@@ -3,7 +3,7 @@
 interface
 
 uses
-  Winapi.Windows, System.SysUtils, System.Classes, System.Generics.Collections, FRCUnit.WinAPI;
+  Winapi.Windows, System.Classes, System.Generics.Collections, System.SysUtils, FRCUnit.WinAPI;
 
 type
   TFileRightErrorType = (frcNone, frcMissingPrivilege, frcFileNotReadable, frcFileNotWritable, frcUserHasNoExecuteRightsForFile,
@@ -107,7 +107,7 @@ type
 implementation
 
 uses
-  System.Math, System.StrUtils;
+  Winapi.AccCtrl, System.Math, System.StrUtils;
 
 function IsProcess64Bit: Boolean;
 begin
