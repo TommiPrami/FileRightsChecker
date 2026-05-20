@@ -15,9 +15,14 @@ const
   ACCESS_DENIED_OBJECT_ACE_TYPE   = BYTE($6);
   SYSTEM_AUDIT_OBJECT_ACE_TYPE    = BYTE($7);
 
+  // ACE header flag: the ACE applies only to inherited children, not the object itself.
+  INHERIT_ONLY_ACE_FLAG           = BYTE($08);
+
 type
   TFileRightErrorType = (frcNone, frcMissingPrivilege, frcFileNotReadable, frcFileNotWritable, frcUserHasNoExecuteRightsForFile,
-    frcIsReparsePoint, frcUACVirtualization, frcDirectoryNotReadable, frcDirectoryNotWritable);
+    frcIsReparsePoint, frcUACVirtualization, frcDirectoryNotReadable, frcDirectoryNotWritable,
+    frcReadOnlyAttribute, frcOwnershipMismatch, frcEffectiveRightsMissing, frcEFSEncrypted, frcNetworkShare,
+    frcShareModeConflict, frcEmptyDACL, frcExplicitDenyACE);
 
   TACE_HEADER = record
     AceType:  BYTE;
@@ -106,6 +111,14 @@ type
     function IsReparsePoint(const ADirectory: string; var AErrorDescription: string): Boolean;
     function GetFileIntegrityLevel(const ADirectory: string; var AErrorDescription: string): string;
     function IsDirectoryEmpty(const ADirectory: string): Boolean;
+    function DiagnoseFileShareModes(const AFileName: string; const AInReadWriteMode: Boolean;
+      var AErrorDescription: string): Boolean;
+    function HasReadOnlyAttribute(const APath: string; var AErrorDescription: string): Boolean;
+    function IsEFSEncrypted(const APath: string; var AErrorDescription: string): Boolean;
+    function IsOnNetworkShare(const APath: string; var AErrorDescription: string): Boolean;
+    function CurrentUserIsOwner(const APath: string; var AErrorDescription: string): Boolean;
+    function GetEffectiveRightsShortfall(const APath: string; const ACheckWriteRights: Boolean;
+      var AErrorDescription: string): Boolean;
     procedure CheckToAddMoreInfoForCreateFileFailure(const AErrorCode: DWORD; var AErrorDescription: string);
     procedure GetExceptionErrorDescription(const AErrorMethod, AFileSystemItem: string; const AException: Exception; var AErrorDescription: string);
     procedure GetFilesAndDirs(const ADirectory: string; const AFiles, ADirectories: TStringList;  var AErrorDescription: string;
@@ -128,11 +141,52 @@ type
 implementation
 
 uses
-  System.Math, System.StrUtils;
+  System.Math, System.StrUtils, Winapi.AccCtrl;
+
+// Not exposed in Winapi.Windows in all Delphi versions — declare it here so we don't
+// depend on the RTL having it.
+function CheckTokenMembership(TokenHandle: THandle; SidToCheck: PSID; var IsMember: BOOL): BOOL; stdcall;
+  external 'advapi32.dll' name 'CheckTokenMembership';
+
+// Same story for GetEffectiveRightsFromAclW — Winapi.AccCtrl declares the TRUSTEE_W
+// types but doesn't always declare the function import.
+function GetEffectiveRightsFromAcl(const pacl: TACL; const pTrustee: TRUSTEE_W;
+  var AccessRights: ACCESS_MASK): DWORD; stdcall;
+  external 'advapi32.dll' name 'GetEffectiveRightsFromAclW';
+
+const
+  // Composite file-access masks from <winnt.h>. Not always exposed by Winapi.Windows,
+  // so spelled out here. STANDARD_RIGHTS_READ/WRITE = $00020000, SYNCHRONIZE = $00100000.
+  //   FILE_GENERIC_READ  = STANDARD_RIGHTS_READ  | FILE_READ_DATA  ($1) | FILE_READ_ATTRIBUTES  ($80)  | FILE_READ_EA  ($8)  | SYNCHRONIZE
+  //   FILE_GENERIC_WRITE = STANDARD_RIGHTS_WRITE | FILE_WRITE_DATA ($2) | FILE_WRITE_ATTRIBUTES ($100) | FILE_WRITE_EA ($10) | FILE_APPEND_DATA ($4) | SYNCHRONIZE
+  FILE_GENERIC_READ  = $00120089;
+  FILE_GENERIC_WRITE = $00120116;
 
 function IsProcess64Bit: Boolean;
 begin
   Result := SizeOf(Pointer) = 8;
+end;
+
+// Returns True only if the SID denotes the current effective user or one of their groups.
+// Failing the API call counts as "unknown" -> False, so we don't fire on unrelated SIDs.
+function CurrentTokenIsMemberOf(const ASid: PSID): Boolean;
+var
+  LIsMember: BOOL;
+begin
+  Result := False;
+
+  if ASid = nil then
+    Exit;
+
+  if not IsValidSid(ASid) then
+    Exit;
+
+  LIsMember := False;
+
+  // Passing 0 for the token tells CheckTokenMembership to use the impersonation
+  // token of the calling thread, or the process token if none — i.e. "us".
+  if CheckTokenMembership(0, ASid, LIsMember) then
+    Result := LIsMember;
 end;
 
 { TFileRightsChecker }
@@ -140,15 +194,33 @@ end;
 procedure TFileRightsChecker.InitializeDirectoriesAndFiles(const ADirectory: string; const AFiles, ASubDirectories: TStringList;
   var AErrorDescription: string);
 begin
+  AErrorDescription := '';
+
   var LDirectories := ADirectory.Split([';']);
 
   for var LDirectory in LDirectories do
   begin
-    GetFilesAndDirs(LDirectory, AFiles, ASubDirectories, AErrorDescription, False);
-    ASubDirectories.Insert(0, LDirectory);
+    var LTrimmed := LDirectory.Trim;
+
+    if LTrimmed.IsEmpty then
+      Continue;
+
+    if not DirectoryExists(LTrimmed) then
+    begin
+      LogError(LTrimmed, frcDirectoryNotReadable, 'Top-level directory does not exist or is not accessible');
+      Continue;
+    end;
+
+    var LPerDirError: string := '';
+    GetFilesAndDirs(LTrimmed, AFiles, ASubDirectories, LPerDirError, False);
+
+    if not LPerDirError.IsEmpty then
+      LogError(LTrimmed, frcDirectoryNotReadable, LPerDirError);
+
+    ASubDirectories.Insert(0, LTrimmed);
 
     if FCheckProcessBackupPrivileges then
-      CheckProcessBackupPrivileges(LDirectory);
+      CheckProcessBackupPrivileges(LTrimmed);
   end;
 end;
 
@@ -246,10 +318,7 @@ begin
     end;
   except
     on E: Exception do
-    begin
       GetExceptionErrorDescription('IsRunningElevated', '', E, AErrorDescription);
-      raise;
-    end;
   end;
 end;
 
@@ -314,24 +383,35 @@ begin
         if not GetAce(LDACL^, LAceIndex, Pointer(LAceHeader)) then
           Continue;
 
-        if LAceHeader^.AceType = ACCESS_DENIED_ACE_TYPE then
-        begin
-          LAccessDeniedAce := PACCESS_DENIED_ACE(LAceHeader);
+        if LAceHeader^.AceType <> ACCESS_DENIED_ACE_TYPE then
+          Continue;
 
-          // Get the SID name for reporting who is denied
-          var LSIDName: array[0..255] of Char;
-          var LDomainName: array[0..255] of Char;
-          var LSIDNameLen: DWORD := SizeOf(LSIDName);
-          var LDomainNameLen: DWORD := SizeOf(LDomainName);
-          var LSIDNameUse: SID_NAME_USE;
+        // INHERIT_ONLY ACEs are templates for child objects and do not apply to
+        // the object whose ACL we're inspecting.
+        if (LAceHeader^.AceFlags and INHERIT_ONLY_ACE_FLAG) <> 0 then
+          Continue;
 
-          if LookupAccountSid(nil, @LAccessDeniedAce^.SidStart, LSIDName, LSIDNameLen, LDomainName, LDomainNameLen, LSIDNameUse) then
-            AErrorDescription := AErrorDescription + Format('DENY ACE found for: %s\%s  ', [LDomainName, LSIDName])
-          else
-            AErrorDescription := AErrorDescription + 'DENY ACE found for unknown SID  ';
+        LAccessDeniedAce := PACCESS_DENIED_ACE(LAceHeader);
 
-          Result := True;
-        end;
+        // Only flag if the DENY actually applies to the current process token —
+        // otherwise we'd report deny ACEs for unrelated SIDs (Guests, SYSTEM, etc.)
+        // that don't affect us.
+        if not CurrentTokenIsMemberOf(@LAccessDeniedAce^.SidStart) then
+          Continue;
+
+        // Get the SID name for reporting who is denied
+        var LSIDName: array[0..255] of Char;
+        var LDomainName: array[0..255] of Char;
+        var LSIDNameLen: DWORD := Length(LSIDName);
+        var LDomainNameLen: DWORD := Length(LDomainName);
+        var LSIDNameUse: SID_NAME_USE;
+
+        if LookupAccountSid(nil, @LAccessDeniedAce^.SidStart, LSIDName, LSIDNameLen, LDomainName, LDomainNameLen, LSIDNameUse) then
+          AErrorDescription := AErrorDescription + Format('DENY ACE found for: %s\%s  ', [LDomainName, LSIDName])
+        else
+          AErrorDescription := AErrorDescription + 'DENY ACE found for unknown SID  ';
+
+        Result := True;
       end;
 
     finally
@@ -365,7 +445,14 @@ begin
         if (LSearchRec.Attr and faDirectory) <> 0 then
         begin
           ADirectories.Add(LPath + LSearchRec.Name);
-          GetFilesAndDirs(LPath + LSearchRec.Name, AFiles, ADirectories, AErrorDescription, False);  // recurse
+
+          // Don't follow reparse points (junctions, symlinks) — they can loop or
+          // expand into unrelated trees. The caller still sees the directory in
+          // the list so file-level checks can flag it as a reparse point.
+{$WARN SYMBOL_PLATFORM OFF}
+          if (LSearchRec.Attr and faSymLink) = 0 then
+            GetFilesAndDirs(LPath + LSearchRec.Name, AFiles, ADirectories, AErrorDescription, False);  // recurse
+{$WARN SYMBOL_PLATFORM ON}
         end
         else
           AFiles.Add(LPath + LSearchRec.Name);
@@ -447,7 +534,7 @@ begin
     end;
 
     // --- Delete ---
-    if not DeleteFile(LTempFile) then
+    if not DeleteFile(PChar(ToLongPath(LTempFile))) then
     begin
       LErrorCode := GetLastError;
       AErrorDescription := Format('DeleteFile failed [%d]: %s', [LErrorCode, SysErrorMessage(LErrorCode)]);
@@ -541,7 +628,11 @@ begin
     else
       LAccessMode := GENERIC_READ;
 
-    LFileHandle := CreateFile(PChar(ToLongPath(AFileName)), LAccessMode, FILE_SHARE_READ, nil, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
+    // Permissive share mode — this is a passive probe, we shouldn't fail just because
+    // another process has the file open for writing or pending delete.
+    LFileHandle := CreateFile(PChar(ToLongPath(AFileName)), LAccessMode,
+      FILE_SHARE_READ or FILE_SHARE_WRITE or FILE_SHARE_DELETE,
+      nil, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
 
     if LFileHandle = INVALID_HANDLE_VALUE then
     begin
@@ -560,11 +651,399 @@ begin
   end;
 end;
 
+// Probes the file with several share modes separately. The most-permissive mode
+// is the same one TestOpenFileRights uses, so success/failure at that level is
+// already reflected there. The point of this function is to surface info from
+// the RESTRICTIVE modes: if a more restrictive mode fails (sharing violation),
+// another process has the file open and the customer's application may also see
+// intermittent open failures even with sufficient ACL rights.
+//
+// Returns True if any restrictive mode reported a non-permission failure that
+// looks like a sharing conflict.
+function TFileRightsChecker.DiagnoseFileShareModes(const AFileName: string; const AInReadWriteMode: Boolean;
+  var AErrorDescription: string): Boolean;
+
+  function ProbeShareMode(const AShareMode: DWORD; const ALabel: string; const AAccessMode: DWORD;
+    var ADetails: string): Boolean;
+  var
+    LHandle: THandle;
+    LErr: DWORD;
+  begin
+    LHandle := CreateFile(PChar(ToLongPath(AFileName)), AAccessMode, AShareMode, nil, OPEN_EXISTING,
+      FILE_ATTRIBUTE_NORMAL, 0);
+
+    if LHandle = INVALID_HANDLE_VALUE then
+    begin
+      LErr := GetLastError;
+      ADetails := ADetails + Format(' | %s: failed [%d] %s', [ALabel, LErr, SysErrorMessage(LErr)]);
+      // ERROR_SHARING_VIOLATION (32) is the smoking gun for share-mode conflicts.
+      Result := LErr = ERROR_SHARING_VIOLATION;
+    end
+    else
+    begin
+      CloseHandle(LHandle);
+      ADetails := ADetails + Format(' | %s: ok', [ALabel]);
+      Result := False;
+    end;
+  end;
+
+var
+  LAccessMode: DWORD;
+  LDetails: string;
+  LSharingViolation: Boolean;
+begin
+  Result := False;
+  AErrorDescription := '';
+  LDetails := '';
+  LSharingViolation := False;
+
+  if AInReadWriteMode then
+    LAccessMode := GENERIC_READ or GENERIC_WRITE
+  else
+    LAccessMode := GENERIC_READ;
+
+  try
+    // Each share value documents what OTHER openers we'll tolerate while we have the handle.
+    LSharingViolation := ProbeShareMode(0, 'exclusive (no share)', LAccessMode, LDetails) or LSharingViolation;
+    LSharingViolation := ProbeShareMode(FILE_SHARE_READ, 'share-read', LAccessMode, LDetails) or LSharingViolation;
+    LSharingViolation := ProbeShareMode(FILE_SHARE_READ or FILE_SHARE_WRITE,
+      'share-read+write', LAccessMode, LDetails) or LSharingViolation;
+    ProbeShareMode(FILE_SHARE_READ or FILE_SHARE_WRITE or FILE_SHARE_DELETE,
+      'share-read+write+delete', LAccessMode, LDetails);
+
+    if LSharingViolation then
+    begin
+      AErrorDescription := 'Sharing violation under one or more share modes (file likely open by another process):'
+        + LDetails;
+      Result := True;
+    end;
+  except
+    on E: Exception do
+      GetExceptionErrorDescription('DiagnoseFileShareModes', AFileName, E, AErrorDescription);
+  end;
+end;
+
+function TFileRightsChecker.HasReadOnlyAttribute(const APath: string; var AErrorDescription: string): Boolean;
+var
+  LAttributes: DWORD;
+  LErr: DWORD;
+begin
+  Result := False;
+  AErrorDescription := '';
+
+  try
+    LAttributes := GetFileAttributes(PChar(ToLongPath(APath)));
+
+    if LAttributes = INVALID_FILE_ATTRIBUTES then
+    begin
+      LErr := GetLastError;
+      AErrorDescription := Format('GetFileAttributes failed [%d]: %s', [LErr, SysErrorMessage(LErr)]);
+
+      Exit;
+    end;
+
+    if (LAttributes and FILE_ATTRIBUTE_READONLY) <> 0 then
+    begin
+      // On directories Windows treats this as "special folder" rather than a true write-block,
+      // but applications and installers still routinely refuse to write to such folders.
+      if (LAttributes and FILE_ATTRIBUTE_DIRECTORY) <> 0 then
+        AErrorDescription := 'Directory has read-only attribute (cosmetic on Win32 but many apps refuse to write here)'
+      else
+        AErrorDescription := 'File has read-only attribute — write opens via CreateFile will fail with ACCESS_DENIED';
+
+      Result := True;
+    end;
+  except
+    on E: Exception do
+      GetExceptionErrorDescription('HasReadOnlyAttribute', APath, E, AErrorDescription);
+  end;
+end;
+
+function TFileRightsChecker.IsEFSEncrypted(const APath: string; var AErrorDescription: string): Boolean;
+var
+  LAttributes: DWORD;
+  LErr: DWORD;
+begin
+  Result := False;
+  AErrorDescription := '';
+
+  try
+    LAttributes := GetFileAttributes(PChar(ToLongPath(APath)));
+
+    if LAttributes = INVALID_FILE_ATTRIBUTES then
+    begin
+      LErr := GetLastError;
+      AErrorDescription := Format('GetFileAttributes failed [%d]: %s', [LErr, SysErrorMessage(LErr)]);
+
+      Exit;
+    end;
+
+    if (LAttributes and FILE_ATTRIBUTE_ENCRYPTED) <> 0 then
+    begin
+      AErrorDescription := 'EFS-encrypted — only the encrypting user (and designated recovery agents) can decrypt; '
+        + 'a different user account, even Administrator, may get ACCESS_DENIED on read';
+      Result := True;
+    end;
+  except
+    on E: Exception do
+      GetExceptionErrorDescription('IsEFSEncrypted', APath, E, AErrorDescription);
+  end;
+end;
+
+function TFileRightsChecker.IsOnNetworkShare(const APath: string; var AErrorDescription: string): Boolean;
+var
+  LExpanded: string;
+  LDriveType: UINT;
+  LRoot: string;
+begin
+  Result := False;
+  AErrorDescription := '';
+
+  try
+    LExpanded := ExpandFileName(APath);
+
+    // UNC path: anything starting with \\ (but not the \\?\ long-path or \\.\ device prefix)
+    if LExpanded.StartsWith('\\') and not LExpanded.StartsWith('\\?\') and not LExpanded.StartsWith('\\.\') then
+    begin
+      AErrorDescription := Format('UNC path on network share — SMB share permissions apply in addition to NTFS ACLs: %s',
+        [LExpanded]);
+      Result := True;
+      Exit;
+    end;
+
+    // Mapped drive: \\?\ paths or drive letters; GetDriveType wants a root like "X:\".
+    if (Length(LExpanded) >= 3) and (LExpanded[2] = ':') then
+    begin
+      LRoot := LExpanded.Substring(0, 2) + '\';
+      LDriveType := GetDriveType(PChar(LRoot));
+
+      if LDriveType = DRIVE_REMOTE then
+      begin
+        AErrorDescription := Format('Mapped network drive %s — SMB share permissions apply in addition to NTFS ACLs',
+          [LRoot]);
+        Result := True;
+      end;
+    end;
+  except
+    on E: Exception do
+      GetExceptionErrorDescription('IsOnNetworkShare', APath, E, AErrorDescription);
+  end;
+end;
+
+function TFileRightsChecker.CurrentUserIsOwner(const APath: string; var AErrorDescription: string): Boolean;
+var
+  LBytesNeeded: DWORD;
+  LSecDesc: PSECURITY_DESCRIPTOR;
+  LOwnerSid: PSID;
+  LOwnerDefaulted: BOOL;
+  LErr: DWORD;
+  LSIDName: array[0..255] of Char;
+  LDomainName: array[0..255] of Char;
+  LSIDNameLen, LDomainNameLen: DWORD;
+  LSIDNameUse: SID_NAME_USE;
+begin
+  Result := True; // optimistic default — if we can't tell, don't fire a false positive
+  AErrorDescription := '';
+  LBytesNeeded := 0;
+
+  try
+    GetFileSecurity(PChar(ToLongPath(APath)), OWNER_SECURITY_INFORMATION, nil, 0, LBytesNeeded);
+
+    if LBytesNeeded = 0 then
+    begin
+      LErr := GetLastError;
+      AErrorDescription := Format('GetFileSecurity(OWNER) failed [%d]: %s', [LErr, SysErrorMessage(LErr)]);
+
+      Exit;
+    end;
+
+    LSecDesc := AllocMem(NativeInt(LBytesNeeded));
+    try
+      if not GetFileSecurity(PChar(ToLongPath(APath)), OWNER_SECURITY_INFORMATION, LSecDesc, LBytesNeeded, LBytesNeeded) then
+      begin
+        LErr := GetLastError;
+        AErrorDescription := Format('GetFileSecurity(OWNER) failed [%d]: %s', [LErr, SysErrorMessage(LErr)]);
+
+        Exit;
+      end;
+
+      if not GetSecurityDescriptorOwner(LSecDesc, LOwnerSid, LOwnerDefaulted) then
+      begin
+        LErr := GetLastError;
+        AErrorDescription := Format('GetSecurityDescriptorOwner failed [%d]: %s', [LErr, SysErrorMessage(LErr)]);
+
+        Exit;
+      end;
+
+      if LOwnerSid = nil then
+        Exit;
+
+      Result := CurrentTokenIsMemberOf(LOwnerSid);
+
+      if not Result then
+      begin
+        LSIDNameLen := Length(LSIDName);
+        LDomainNameLen := Length(LDomainName);
+
+        if LookupAccountSid(nil, LOwnerSid, LSIDName, LSIDNameLen, LDomainName, LDomainNameLen, LSIDNameUse) then
+          AErrorDescription := Format('Owner is %s\%s (not current user). Operations that need WRITE_DAC or '
+            + 'take-ownership rights will fail unless the owner is in the current token.', [LDomainName, LSIDName])
+        else
+          AErrorDescription := 'Owner SID does not match current token and could not be resolved to a name';
+      end;
+    finally
+      FreeMem(LSecDesc);
+    end;
+  except
+    on E: Exception do
+      GetExceptionErrorDescription('CurrentUserIsOwner', APath, E, AErrorDescription);
+  end;
+end;
+
+function TFileRightsChecker.GetEffectiveRightsShortfall(const APath: string; const ACheckWriteRights: Boolean;
+  var AErrorDescription: string): Boolean;
+type
+  PLocalTokenUser = ^TOKEN_USER;
+var
+  LBytesNeeded: DWORD;
+  LSecDesc: PSECURITY_DESCRIPTOR;
+  LDACL: PACL;
+  LDACLPresent: BOOL;
+  LDefaulted: BOOL;
+  LErr: DWORD;
+  LTokenHandle: THandle;
+  LUserBuf: array[0..511] of Byte;
+  LRetLen: DWORD;
+  LTokenUser: PLocalTokenUser;
+  LTrustee: TRUSTEE_W;
+  LRights: ACCESS_MASK;
+  LRequired: ACCESS_MASK;
+  LMissing: ACCESS_MASK;
+  LParts: string;
+begin
+  Result := False;
+  AErrorDescription := '';
+  LBytesNeeded := 0;
+  LRetLen := 0;
+
+  try
+    if not OpenProcessToken(GetCurrentProcess, TOKEN_QUERY, LTokenHandle) then
+    begin
+      LErr := GetLastError;
+      AErrorDescription := Format('OpenProcessToken failed [%d]: %s', [LErr, SysErrorMessage(LErr)]);
+
+      Exit;
+    end;
+
+    try
+      if not GetTokenInformation(LTokenHandle, TokenUser, @LUserBuf[0], Length(LUserBuf), LRetLen) then
+      begin
+        LErr := GetLastError;
+        AErrorDescription := Format('GetTokenInformation(TokenUser) failed [%d]: %s', [LErr, SysErrorMessage(LErr)]);
+
+        Exit;
+      end;
+    finally
+      CloseHandle(LTokenHandle);
+    end;
+
+    LTokenUser := PLocalTokenUser(@LUserBuf[0]);
+
+    GetFileSecurity(PChar(ToLongPath(APath)), DACL_SECURITY_INFORMATION or OWNER_SECURITY_INFORMATION or GROUP_SECURITY_INFORMATION,
+      nil, 0, LBytesNeeded);
+
+    if LBytesNeeded = 0 then
+    begin
+      LErr := GetLastError;
+      AErrorDescription := Format('GetFileSecurity for effective rights failed [%d]: %s', [LErr, SysErrorMessage(LErr)]);
+
+      Exit;
+    end;
+
+    LSecDesc := AllocMem(NativeInt(LBytesNeeded));
+    try
+      if not GetFileSecurity(PChar(ToLongPath(APath)),
+           DACL_SECURITY_INFORMATION or OWNER_SECURITY_INFORMATION or GROUP_SECURITY_INFORMATION,
+           LSecDesc, LBytesNeeded, LBytesNeeded) then
+      begin
+        LErr := GetLastError;
+        AErrorDescription := Format('GetFileSecurity for effective rights failed [%d]: %s', [LErr, SysErrorMessage(LErr)]);
+
+        Exit;
+      end;
+
+      if not GetSecurityDescriptorDacl(LSecDesc, LDACLPresent, LDACL, LDefaulted) then
+      begin
+        LErr := GetLastError;
+        AErrorDescription := Format('GetSecurityDescriptorDacl failed [%d]: %s', [LErr, SysErrorMessage(LErr)]);
+
+        Exit;
+      end;
+
+      if not LDACLPresent or (LDACL = nil) then
+        Exit; // NULL DACL = full access; nothing missing
+
+      FillChar(LTrustee, SizeOf(LTrustee), 0);
+      LTrustee.TrusteeForm := TRUSTEE_IS_SID;
+      LTrustee.TrusteeType := TRUSTEE_IS_USER;
+      // For TRUSTEE_IS_SID the API expects a PSID stuffed into the ptstrName field;
+      // both are pointer-sized, so the cast through PWideChar is the documented idiom.
+      LTrustee.ptstrName := PWideChar(LTokenUser^.User.Sid);
+
+      LRights := 0;
+
+      if GetEffectiveRightsFromAcl(LDACL^, LTrustee, LRights) <> ERROR_SUCCESS then
+      begin
+        LErr := GetLastError;
+        AErrorDescription := Format('GetEffectiveRightsFromAcl failed [%d]: %s', [LErr, SysErrorMessage(LErr)]);
+
+        Exit;
+      end;
+
+      // FILE_GENERIC_READ / WRITE / EXECUTE expand to specific bits; checking the
+      // ALL_ACCESS subset is too coarse, but the named groups match what a normal
+      // application asks for through GENERIC_READ/WRITE.
+      if ACheckWriteRights then
+        LRequired := FILE_GENERIC_READ or FILE_GENERIC_WRITE
+      else
+        LRequired := FILE_GENERIC_READ;
+
+      LMissing := LRequired and not LRights;
+
+      if LMissing <> 0 then
+      begin
+        LParts := '';
+
+        if (LMissing and FILE_READ_DATA)       <> 0 then LParts := LParts + 'FILE_READ_DATA ';
+        if (LMissing and FILE_WRITE_DATA)      <> 0 then LParts := LParts + 'FILE_WRITE_DATA ';
+        if (LMissing and FILE_APPEND_DATA)     <> 0 then LParts := LParts + 'FILE_APPEND_DATA ';
+        if (LMissing and FILE_READ_EA)         <> 0 then LParts := LParts + 'FILE_READ_EA ';
+        if (LMissing and FILE_WRITE_EA)        <> 0 then LParts := LParts + 'FILE_WRITE_EA ';
+        if (LMissing and FILE_READ_ATTRIBUTES) <> 0 then LParts := LParts + 'FILE_READ_ATTRIBUTES ';
+        if (LMissing and FILE_WRITE_ATTRIBUTES)<> 0 then LParts := LParts + 'FILE_WRITE_ATTRIBUTES ';
+        if (LMissing and READ_CONTROL)         <> 0 then LParts := LParts + 'READ_CONTROL ';
+        if (LMissing and SYNCHRONIZE)          <> 0 then LParts := LParts + 'SYNCHRONIZE ';
+
+        AErrorDescription := Format('Effective rights for current user missing: %s(mask: 0x%.8x)',
+          [LParts, LMissing]);
+        Result := True;
+      end;
+    finally
+      FreeMem(LSecDesc);
+    end;
+  except
+    on E: Exception do
+      GetExceptionErrorDescription('GetEffectiveRightsShortfall', APath, E, AErrorDescription);
+  end;
+end;
+
 function TFileRightsChecker.ToLongPath(const ADirectory: string): string;
 const
   LONG_PATH_PREFIX     = '\\?\';
   UNC_PREFIX           = '\\';
   LONG_UNC_PATH_PREFIX = '\\?\UNC\';
+var
+  LNormalized: string;
 begin
   if not FOpenFilesLongFileAndPathNameSupport then
     Exit(ADirectory);
@@ -573,11 +1052,15 @@ begin
   if ADirectory.StartsWith(LONG_PATH_PREFIX) then
     Exit(ADirectory);
 
+  // \\?\ requires an absolute, normalized path — relative paths and '..' segments
+  // are not resolved by the kernel when this prefix is used.
+  LNormalized := ExpandFileName(ADirectory);
+
   // UNC path e.g. \\server\share
-  if ADirectory.StartsWith(UNC_PREFIX) then
-    Result := LONG_UNC_PATH_PREFIX + ADirectory.Substring(2)
+  if LNormalized.StartsWith(UNC_PREFIX) then
+    Result := LONG_UNC_PATH_PREFIX + LNormalized.Substring(2)
   else
-    Result := LONG_PATH_PREFIX + ADirectory;
+    Result := LONG_PATH_PREFIX + LNormalized;
 end;
 
 procedure TFileRightsChecker.Execute(const ADirectory: string; const ACheckWriteRights: Boolean);
@@ -588,13 +1071,6 @@ begin
 
   try
     InitializeDirectoriesAndFiles(ADirectory, LFiles, LSubDirectories, LLocalErrorDescription);
-
-    if not LLocalErrorDescription.IsEmpty then
-    begin
-      LogError('', frcNone, LLocalErrorDescription);
-
-      Exit;
-    end;
 
     if LSubDirectories.Count >= 1 then
       DoDirectoryChecks(LSubDirectories, ACheckWriteRights);
@@ -731,7 +1207,7 @@ end;
 procedure TFileRightsChecker.GetExceptionErrorDescription(const AErrorMethod, AFileSystemItem: string; const AException: Exception; var AErrorDescription: string);
 begin
   AErrorDescription := 'Exception ' + AException.ClassName + ' occurred at ' + AErrorMethod.QuotedString('"')  + ' with message: '
-    + AException.Message.QuotedString('"') + '. While checkinf file system item: ' + AFileSystemItem.QuotedString('"');
+    + AException.Message.QuotedString('"') + '. While checking file system item: ' + AFileSystemItem.QuotedString('"');
 end;
 
 function TFileRightsChecker.GetFileIntegrityLevel(const ADirectory: string; var AErrorDescription: string): string;
@@ -864,21 +1340,60 @@ procedure TFileRightsChecker.DoDirectoryChecks(const ADirectories: TStringList; 
 begin
   for var LSubDirectory in ADirectories do
   begin
-    var LErrorDescription: string := '';
+    // Each diagnostic is independent and logs its own error type. Fine-grained on purpose:
+    // a single directory can be on a network share, read-only, AND have an explicit deny —
+    // we want all three reported, not just the first match.
 
-    if IsDirectoryUnderUACVirtualization(LSubDirectory, LErrorDescription) then
-      LogError(LSubDirectory, frcUACVirtualization, LErrorDescription)
-    else if ACheckWriteRights then
+    var LDesc: string := '';
+
+    if IsOnNetworkShare(LSubDirectory, LDesc) then
+      LogError(LSubDirectory, frcNetworkShare, LDesc);
+
+    LDesc := '';
+    if IsReparsePoint(LSubDirectory, LDesc) then
+      LogError(LSubDirectory, frcIsReparsePoint, LDesc);
+
+    LDesc := '';
+    if HasReadOnlyAttribute(LSubDirectory, LDesc) then
+      LogError(LSubDirectory, frcReadOnlyAttribute, LDesc);
+
+    LDesc := '';
+    if IsEFSEncrypted(LSubDirectory, LDesc) then
+      LogError(LSubDirectory, frcEFSEncrypted, LDesc);
+
+    LDesc := '';
+    if HasEmptyDACL(LSubDirectory, LDesc) then
+      LogError(LSubDirectory, frcEmptyDACL, LDesc);
+
+    LDesc := '';
+    if HasExplicitDenyACE(LSubDirectory, LDesc) then
+      LogError(LSubDirectory, frcExplicitDenyACE, LDesc);
+
+    LDesc := '';
+    if not CurrentUserIsOwner(LSubDirectory, LDesc) and not LDesc.IsEmpty then
+      LogError(LSubDirectory, frcOwnershipMismatch, LDesc);
+
+    LDesc := '';
+    if GetEffectiveRightsShortfall(LSubDirectory, ACheckWriteRights, LDesc) then // Slow
+      LogError(LSubDirectory, frcEffectiveRightsMissing, LDesc);
+
+    LDesc := '';
+    if IsDirectoryUnderUACVirtualization(LSubDirectory, LDesc) then
+      LogError(LSubDirectory, frcUACVirtualization, LDesc);
+
+    // Primary access probe — drives the readable/writable statistic.
+    LDesc := '';
+    if ACheckWriteRights then
     begin
-      if not TestDirectoryWriteRights(LSubDirectory, LErrorDescription) then
-        LogError(LSubDirectory, frcDirectoryNotWritable, LErrorDescription)
+      if not TestDirectoryWriteRights(LSubDirectory, LDesc) then
+        LogError(LSubDirectory, frcDirectoryNotWritable, LDesc)
       else
         FReadWriteStatistics.AddCheckedDirectory;
     end
     else
     begin
-      if not TestDirectoryReadRights(LSubDirectory, LErrorDescription) then
-        LogError(LSubDirectory, frcDirectoryNotReadable , LErrorDescription)
+      if not TestDirectoryReadRights(LSubDirectory, LDesc) then
+        LogError(LSubDirectory, frcDirectoryNotReadable, LDesc)
       else
         FReadOnlyStatistics.AddCheckedDirectory;
     end;
@@ -889,38 +1404,75 @@ procedure TFileRightsChecker.DoFileChecks(const AFiles: TStringList; const AChec
 begin
   for var LCurrentFile in AFiles do
   begin
-    var LErrorDescription: string := '';
+    // Same approach as DoDirectoryChecks: each diagnostic gets its own LogError so the
+    // operator sees every cause that applies, not just the first.
 
-    if IsReparsePoint(LCurrentFile, LErrorDescription) then
-      LogError(LCurrentFile, frcIsReparsePoint, LErrorDescription)
-    else if not TestOpenFileRights(LCurrentFile, ACheckWriteRights, LErrorDescription) then
+    var LDesc: string := '';
+
+    if IsOnNetworkShare(LCurrentFile, LDesc) then
+      LogError(LCurrentFile, frcNetworkShare, LDesc);
+
+    LDesc := '';
+    if IsReparsePoint(LCurrentFile, LDesc) then
+      LogError(LCurrentFile, frcIsReparsePoint, LDesc);
+
+    LDesc := '';
+    if HasReadOnlyAttribute(LCurrentFile, LDesc) then
+      LogError(LCurrentFile, frcReadOnlyAttribute, LDesc);
+
+    LDesc := '';
+    if IsEFSEncrypted(LCurrentFile, LDesc) then
+      LogError(LCurrentFile, frcEFSEncrypted, LDesc);
+
+    LDesc := '';
+    if HasEmptyDACL(LCurrentFile, LDesc) then
+      LogError(LCurrentFile, frcEmptyDACL, LDesc);
+
+    LDesc := '';
+    if HasExplicitDenyACE(LCurrentFile, LDesc) then
+      LogError(LCurrentFile, frcExplicitDenyACE, LDesc);
+
+    LDesc := '';
+    if not CurrentUserIsOwner(LCurrentFile, LDesc) and not LDesc.IsEmpty then
+      LogError(LCurrentFile, frcOwnershipMismatch, LDesc);
+
+    LDesc := '';
+    if GetEffectiveRightsShortfall(LCurrentFile, ACheckWriteRights, LDesc) then // Slow
+      LogError(LCurrentFile, frcEffectiveRightsMissing, LDesc);
+
+    LDesc := '';
+    if DiagnoseFileShareModes(LCurrentFile, ACheckWriteRights, LDesc) then
+      LogError(LCurrentFile, frcShareModeConflict, LDesc);
+
+    // Primary access probe — drives the readable/writable statistic and triggers
+    // the "additional info" follow-ups below if it fails.
+    LDesc := '';
+    if not TestOpenFileRights(LCurrentFile, ACheckWriteRights, LDesc) then
     begin
-      var LDenyDescription: string := '';
+      var LIntegrityErr: string;
+      var LIntegrity: string := GetFileIntegrityLevel(LCurrentFile, LIntegrityErr);
+      if LIntegrity <> '' then
+        LDesc := LDesc + Format(' | Integrity level: %s', [LIntegrity]) +
+          IfThen(LIntegrityErr.IsEmpty, '', ' - ' + LIntegrityErr);
 
-      if HasExplicitDenyACE(LCurrentFile, LDenyDescription) then
-        LErrorDescription := LErrorDescription + ' | ' + LDenyDescription
-      else if HasEmptyDACL(LCurrentFile, LDenyDescription) then
-        LErrorDescription := LErrorDescription + ' | ' + LDenyDescription;
-
-      var LIntegrityLevelErrorDescription: string;
-      var LIntegrityLevel: string := GetFileIntegrityLevel(LCurrentFile, LIntegrityLevelErrorDescription);
-      if LIntegrityLevel <> '' then
-        LErrorDescription := LErrorDescription + Format(' | Integrity level: %s', [LIntegrityLevel]) +
-        IfThen(LIntegrityLevelErrorDescription.IsEmpty, '', ' - ' + LIntegrityLevelErrorDescription);
-
-      LogError(LCurrentFile, TFileRightErrorType(IfThen(ACheckWriteRights, Integer(frcFileNotWritable), Integer(frcFileNotReadable))), LErrorDescription);
+      if ACheckWriteRights then
+        LogError(LCurrentFile, frcFileNotWritable, LDesc)
+      else
+        LogError(LCurrentFile, frcFileNotReadable, LDesc);
 
       var LExtension := ExtractFileExt(LCurrentFile);
-
       if MatchText(LExtension, ['.exe', '.dll']) then
-        if not TestExecuteRights(LCurrentFile, LErrorDescription) then
-          LogError(LCurrentFile, frcUserHasNoExecuteRightsForFile, LErrorDescription);
+      begin
+        var LExecDesc: string := '';
+        if not TestExecuteRights(LCurrentFile, LExecDesc) then
+          LogError(LCurrentFile, frcUserHasNoExecuteRightsForFile, LExecDesc);
+      end;
     end
     else if ACheckWriteRights then
       FReadWriteStatistics.AddCheckedFile
     else
       FReadOnlyStatistics.AddCheckedFile;
- end;
+  end;
 end;
 
 { TErrorItem }
@@ -946,6 +1498,14 @@ begin
     frcUACVirtualization: Result := 'Path is under UAC virtualization';
     frcDirectoryNotReadable: Result := 'Directory not readable';
     frcDirectoryNotWritable: Result := 'Directory not writable';
+    frcReadOnlyAttribute: Result := 'Read-only attribute set';
+    frcOwnershipMismatch: Result := 'Current user is not the owner';
+    frcEffectiveRightsMissing: Result := 'Effective rights missing for current user';
+    frcEFSEncrypted: Result := 'File or directory is EFS-encrypted';
+    frcNetworkShare: Result := 'Path is on a network share (SMB / mapped drive)';
+    frcShareModeConflict: Result := 'File open blocked by sharing mode';
+    frcEmptyDACL: Result := 'Empty DACL — all access denied';
+    frcExplicitDenyACE: Result := 'Explicit DENY ACE applies to current user';
     else
       Result := Format('Unknown error type (%d)', [Ord(FErrorType)]);
   end;

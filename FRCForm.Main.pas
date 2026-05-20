@@ -14,7 +14,7 @@ type
     CheckBoxCheckProcessBackupPrivileges: TCheckBox;
     CheckBoxOpenFilesLongFileAndPathNameSupport: TCheckBox;
     EditReadOnlyCheck: TEdit;
-    EditReadWrtiteChecks: TEdit;
+    EditReadWriteChecks: TEdit;
     LabelMustHaveReadRights: TLabel;
     LabelMustHaveWriteRights: TLabel;
     MemoLog: TMemo;
@@ -70,7 +70,7 @@ begin
   var LFileAccessCheck := TFileRightsChecker.Create(CheckBoxOpenFilesLongFileAndPathNameSupport.Checked,
     CheckBoxCheckProcessBackupPrivileges.Checked);
   try
-    LFileAccessCheck.Execute(EditReadWrtiteChecks.Text, True);
+    LFileAccessCheck.Execute(EditReadWriteChecks.Text, True);
     LFileAccessCheck.Execute(EditReadOnlyCheck.Text, False);
 
     if LFileAccessCheck.Errors.Count = 0 then
@@ -86,6 +86,7 @@ begin
     end;
 
     MemoLog.Lines.Add('Statistics:');
+    MemoLog.Lines.Add('  - ' + LFileAccessCheck.ReadOnlyStatistics.DirectoriesChecked.ToString + ' directories are readable (as should)');
     MemoLog.Lines.Add('  - ' + LFileAccessCheck.ReadOnlyStatistics.FilesChecked.ToString + ' files could be opened in read only-mode');
     MemoLog.Lines.Add('  - ' + LFileAccessCheck.ReadWriteStatistics.DirectoriesChecked.ToString + ' directories are writable (as should)');
     MemoLog.Lines.Add('  - ' + LFileAccessCheck.ReadWriteStatistics.FilesChecked.ToString + ' files could be opened in read write-mode');
@@ -107,13 +108,13 @@ begin
   FSettings.LoadFromFile(SETTINGS_FILENAME);
 
   EditReadOnlyCheck.Text := FSettings.ReadOnlyDirectoriesAsString;
-  EditReadWrtiteChecks.Text := FSettings.ReadWriteDirectoriesAsString;
+  EditReadWriteChecks.Text := FSettings.ReadWriteDirectoriesAsString;
 end;
 
 procedure TFRCMainForm.SaveSettings;
 begin
   FSettings.ParseReadOnlyDirectoriesFromString(EditReadOnlyCheck.Text);
-  FSettings.ParseReadWriteDirectoriesFromString(EditReadWrtiteChecks.Text);
+  FSettings.ParseReadWriteDirectoriesFromString(EditReadWriteChecks.Text);
 
   FSettings.SaveToFile(SETTINGS_FILENAME);
 end;

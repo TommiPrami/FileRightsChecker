@@ -106,7 +106,7 @@ object FRCMainForm: TFRCMainForm
         Align = alTop
         TabOrder = 0
       end
-      object EditReadWrtiteChecks: TEdit
+      object EditReadWriteChecks: TEdit
         AlignWithMargins = True
         Left = 3
         Top = 84

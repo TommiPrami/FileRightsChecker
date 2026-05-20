@@ -107,7 +107,14 @@ begin
   var LDirectories := ASemicolonSeparatedDirectories.Split([';']);
 
   for var LDirectory in LDirectories do
-    AList.Add(IncludeTrailingPathDelimiter(LDirectory));
+  begin
+    var LTrimmed := LDirectory.Trim;
+
+    if LTrimmed.IsEmpty then
+      Continue;
+
+    AList.Add(IncludeTrailingPathDelimiter(LTrimmed));
+  end;
 end;
 
 procedure TFRCSettings.Assign(ASource: TPersistent);
