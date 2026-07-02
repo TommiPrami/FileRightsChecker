@@ -771,8 +771,7 @@ begin
   AErrorDescription := '';
 
   try
-    LFileHandle := CreateFile(PChar(ToLongPath(AFileName)), DELETE,
-      FILE_SHARE_READ or FILE_SHARE_WRITE or FILE_SHARE_DELETE,
+    LFileHandle := CreateFile(PChar(ToLongPath(AFileName)), DELETE_ACCESS_RIGHT, FILE_SHARE_READ or FILE_SHARE_WRITE or FILE_SHARE_DELETE,
       nil, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
 
     if LFileHandle = INVALID_HANDLE_VALUE then
@@ -912,15 +911,14 @@ begin
     // Each share value documents what OTHER openers we'll tolerate while we have the handle.
     LSharingViolation := ProbeShareMode(0, 'exclusive (no share)', LAccessMode, LDetails) or LSharingViolation;
     LSharingViolation := ProbeShareMode(FILE_SHARE_READ, 'share-read', LAccessMode, LDetails) or LSharingViolation;
-    LSharingViolation := ProbeShareMode(FILE_SHARE_READ or FILE_SHARE_WRITE,
-      'share-read+write', LAccessMode, LDetails) or LSharingViolation;
-    ProbeShareMode(FILE_SHARE_READ or FILE_SHARE_WRITE or FILE_SHARE_DELETE,
-      'share-read+write+delete', LAccessMode, LDetails);
+    LSharingViolation := ProbeShareMode(FILE_SHARE_READ or FILE_SHARE_WRITE, 'share-read+write', LAccessMode, LDetails) or LSharingViolation;
+
+    ProbeShareMode(FILE_SHARE_READ or FILE_SHARE_WRITE or FILE_SHARE_DELETE, 'share-read+write+delete', LAccessMode, LDetails);
 
     if LSharingViolation then
     begin
-      AErrorDescription := 'Sharing violation under one or more share modes (file likely open by another process):'
-        + LDetails;
+      AErrorDescription := 'Sharing violation under one or more share modes (file likely open by another process):' + LDetails;
+
       Result := True;
     end;
   except
@@ -1043,10 +1041,9 @@ begin
     // UNC path: anything starting with \\ (but not the \\?\ long-path or \\.\ device prefix)
     if LExpanded.StartsWith('\\') and not LExpanded.StartsWith('\\?\') and not LExpanded.StartsWith('\\.\') then
     begin
-      AErrorDescription := Format('UNC path on network share — SMB share permissions apply in addition to NTFS ACLs: %s',
-        [LExpanded]);
-      Result := True;
-      Exit;
+      AErrorDescription := Format('UNC path on network share — SMB share permissions apply in addition to NTFS ACLs: %s',  [LExpanded]);
+
+      Exit(True);
     end;
 
     // Mapped drive: \\?\ paths or drive letters; GetDriveType wants a root like "X:\".
@@ -1057,8 +1054,7 @@ begin
 
       if LDriveType = DRIVE_REMOTE then
       begin
-        AErrorDescription := Format('Mapped network drive %s — SMB share permissions apply in addition to NTFS ACLs',
-          [LRoot]);
+        AErrorDescription := Format('Mapped network drive %s — SMB share permissions apply in addition to NTFS ACLs', [LRoot]);
         Result := True;
       end;
     end;
@@ -1200,9 +1196,8 @@ begin
 
     LSecDesc := AllocMem(NativeInt(LBytesNeeded));
     try
-      if not GetFileSecurity(PChar(ToLongPath(APath)),
-           DACL_SECURITY_INFORMATION or OWNER_SECURITY_INFORMATION or GROUP_SECURITY_INFORMATION,
-           LSecDesc, LBytesNeeded, LBytesNeeded) then
+      if not GetFileSecurity(PChar(ToLongPath(APath)), DACL_SECURITY_INFORMATION or OWNER_SECURITY_INFORMATION or GROUP_SECURITY_INFORMATION,
+        LSecDesc, LBytesNeeded, LBytesNeeded) then
       begin
         LErr := GetLastError;
         AErrorDescription := Format('GetFileSecurity for effective rights failed [%d]: %s', [LErr, SysErrorMessage(LErr)]);
@@ -1381,6 +1376,7 @@ begin
     if (FTotalTestsPlanned > 0) and (FTestsExecuted < FTotalTestsPlanned) then
     begin
       FTestsExecuted := FTotalTestsPlanned;
+
       if Assigned(FOnTest) then
         FOnTest(fstFile, '', FTestsExecuted, FErrors.ErrorCount, 100.0);
     end;
@@ -1898,6 +1894,7 @@ begin
 
     // Primary access probe — drives the readable/writable statistic.
     LDesc := '';
+
     if ACheckWriteRights then
     begin
       if not TestDirectoryWriteRights(LSubDirectory, LDesc) then
@@ -1912,6 +1909,7 @@ begin
       else
         FReadOnlyStatistics.AddCheckedDirectory;
     end;
+
     ReportTest(fstDirectory, LSubDirectory);
   end;
 end;
@@ -2010,6 +2008,7 @@ begin
       var LIntegrityErr: string;
       var LFileIntegrityRID: Integer;
       var LIntegrity: string := GetFileIntegrityLevel(LCurrentFile, LFileIntegrityRID, LIntegrityErr);
+
       if LIntegrity <> '' then
         LDesc := LDesc + Format(' | Integrity level: %s', [LIntegrity]) +
           IfThen(LIntegrityErr.IsEmpty, '', ' - ' + LIntegrityErr);
@@ -2031,6 +2030,7 @@ begin
       if MatchText(LExtension, ['.exe', '.dll']) then
       begin
         var LExecDesc: string := '';
+
         if not TestExecuteRights(LCurrentFile, LExecDesc) then
           LogError(LCurrentFile, frcUserHasNoExecuteRightsForFile, LExecDesc);
       end;
@@ -2046,6 +2046,7 @@ begin
       FReadWriteStatistics.AddCheckedFile
     else
       FReadOnlyStatistics.AddCheckedFile;
+
     ReportTest(fstFile, LCurrentFile);
 
     // Exclusive-mode probe — write pass only. A file can be perfectly read-writable
@@ -2058,6 +2059,7 @@ begin
       if LPrimaryOpenOk then
       begin
         LDesc := '';
+
         if not TestOpenFileExclusiveRights(LCurrentFile, LDesc) then
         begin
           LogError(LCurrentFile, frcExclusiveOpenFailed, LDesc);
@@ -2065,6 +2067,7 @@ begin
           // The exclusive failure is causal: whoever keeps a handle open blocks
           // exclusive access directly, so name the process as an error.
           var LHolderDesc: string := '';
+
           if TryDescribeReservingProcess(LCurrentFile, LHolderDesc) then
             LogError(LCurrentFile, frcFileReservedByProcess,
               LHolderDesc + ' — exclusive access is blocked while this process keeps the file open');

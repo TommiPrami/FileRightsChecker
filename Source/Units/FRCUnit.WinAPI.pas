@@ -52,6 +52,11 @@ const
   ERROR_DISK_QUOTA_EXCEEDED              = 1295;
   ERROR_CANT_ACCESS_FILE                 = 1920;
 
+  // Standard access right DELETE from <winnt.h>. Winapi.Windows declares it as
+  // DELETE, but that identifier collides with the intrinsic System.Delete procedure
+  // in Delphi, so the project uses this alias.
+  DELETE_ACCESS_RIGHT                    = $00010000;
+
 type
   TACE_HEADER = record
     AceType:  Byte;

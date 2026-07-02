@@ -74,6 +74,7 @@ type
 
     function Count: Integer;
     function CountBySeverity(const ASeverity: TErrorSeverity): Integer;
+    function CountByErrorType(const AErrorType: TFileRightErrorType): Integer;
     // Count of esError items only — what the progress display calls "Errors".
     function ErrorCount: Integer;
     procedure Add(const AItem: TErrorItem);
@@ -173,6 +174,15 @@ begin
 
   for var LItem in FErrorItems do
     if LItem.Severity = ASeverity then
+      Inc(Result);
+end;
+
+function TErrorItemCollection.CountByErrorType(const AErrorType: TFileRightErrorType): Integer;
+begin
+  Result := 0;
+
+  for var LItem in FErrorItems do
+    if LItem.ErrorType = AErrorType then
       Inc(Result);
 end;
 

@@ -119,6 +119,7 @@ begin
     Log('- ' + LFileAccessCheck.ReadWriteStatistics.DirectoriesChecked.ToString + ' directories are writable (as should)', 1);
     Log('- ' + LFileAccessCheck.ReadWriteStatistics.FilesChecked.ToString + ' files could be opened in read write-mode', 1);
     Log('- ' + LFileAccessCheck.ReadWriteStatistics.FilesOpenedExclusively.ToString + ' files could be opened in exclusive mode', 1);
+    Log('- ' + LFileAccessCheck.Errors.CountByErrorType(frcFileReservedByProcess).ToString + ' files are held open by another process', 1);
     Log('', 1);
   finally
     // Restore the title even if the run died with an exception — otherwise the
