@@ -3,8 +3,7 @@
 interface
 
 uses
-  Winapi.Windows, System.Classes, System.Generics.Collections, System.SysUtils,
-  FRCUnit.WinAPI, FRCUnit.Statistics;
+  Winapi.Windows, System.Classes, System.Generics.Collections, System.SysUtils, FRCUnit.Statistics, FRCUnit.WinAPI;
 
 type
   // There is no clean RTL/WinAPI "is this a file or a directory" enum — Win32 only has

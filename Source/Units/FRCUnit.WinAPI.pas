@@ -7,7 +7,7 @@
 interface
 
 uses
-  Winapi.Windows, Winapi.AccCtrl;
+  Winapi.AccCtrl, Winapi.Windows;
 
 const
   // ACE type values used in the AceType field of ACE headers.
