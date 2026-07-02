@@ -86,6 +86,10 @@ begin
     LThrottle.OnShowProgress := ShowProgress;
     LFileAccessCheck.OnTest := LThrottle.HandleTest;
 
+    // Who ran the scan and how — without this, support cannot interpret the results.
+    Log(LFileAccessCheck.RunContextDescription);
+    Log('');
+
     // Queue both passes first so RunPreparedPasses can see the full picture and
     // emit one continuous 0..100% sweep with cumulative test and error counts.
     LFileAccessCheck.PreparePass(EditReadWriteChecks.Text, True);
@@ -100,8 +104,13 @@ begin
       begin
         var LError := LFileAccessCheck.Errors[LIndex];
 
-        Log(LError.ErrorTypeStr + '- '  + LError.FileSystemItem.QuotedString('"') + ' - With error: ' + LError.ErrorDescription, 1);
+        Log('[' + LError.SeverityStr + '] ' + LError.ErrorTypeStr + ' - ' + LError.FileSystemItem.QuotedString('"')
+          + ' - With error: ' + LError.ErrorDescription, 1);
       end;
+
+      Log('');
+      Log(Format('Findings: %d errors, %d warnings, %d info', [LFileAccessCheck.Errors.ErrorCount,
+        LFileAccessCheck.Errors.CountBySeverity(esWarning), LFileAccessCheck.Errors.CountBySeverity(esInfo)]));
     end;
 
     Log('Statistics:');
@@ -111,6 +120,9 @@ begin
     Log('- ' + LFileAccessCheck.ReadWriteStatistics.FilesChecked.ToString + ' files could be opened in read write-mode', 1);
     Log('', 1);
   finally
+    // Restore the title even if the run died with an exception — otherwise the
+    // caption stays stuck at the last progress text.
+    Caption := LThrottle.CaptionPrefix;
     LThrottle.Free;
     LFileAccessCheck.Free;
     LAction.Enabled := True;
