@@ -107,8 +107,8 @@ begin
   FHasReportedAny := True;
 end;
 
-procedure TProgressThrottle.HandleTest(const AType: TFileSystemType; const AName: string;
-  const ATestCount: Integer; const AErrorsCount: Integer; const AProgress: Double);
+procedure TProgressThrottle.HandleTest(const AType: TFileSystemType; const AName: string; const ATestCount: Integer;
+  const AErrorsCount: Integer; const AProgress: Double);
 var
   LItemLabel: string;
   LProgressText: string;
