@@ -123,6 +123,8 @@
         <DCCReference Include="Source\Units\FRCUnit.WinAPI.pas"/>
         <DCCReference Include="Source\Units\FRCUnit.ProgressThrottle.pas"/>
         <DCCReference Include="Source\Units\FRCUnit.Statistics.pas"/>
+        <DCCReference Include="Source\3rdParty\Delphi.GetProcessReservingFile\Source\UnitGetProcessReservingFile.pas"/>
+        <DCCReference Include="Source\3rdParty\Delphi.GetProcessReservingFile\Source\UnitGetProcessReservingFile.Types.pas"/>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>
         </BuildConfiguration>

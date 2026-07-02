@@ -59,6 +59,10 @@ type
     function TestDirectoryWriteRights(const ADirectory: string; var AErrorDescription: string): Boolean;
     function TestExecuteRights(const AFileName: string; var AErrorDescription: string): Boolean;
     function TestOpenFileRights(const AFileName: string; const AInReadWriteMode: Boolean; var AErrorDescription: string): Boolean;
+    function TestOpenFileExclusiveRights(const AFileName: string; var AErrorDescription: string): Boolean;
+    function TestOpenFileDeleteRights(const AFileName: string; var AErrorDescription: string): Boolean;
+    function TestOpenFileWriteDACRights(const AFileName: string; var AErrorDescription: string): Boolean;
+    function TryDescribeReservingProcess(const AFileName: string; var ADescription: string): Boolean;
     function IsRunningElevated(var AErrorDescription: string): Boolean;
     function ToLongPath(const ADirectory: string): string;
     function HasEmptyDACL(const ADirectory: string; var AErrorDescription: string): Boolean;
@@ -90,7 +94,7 @@ type
     procedure DoDirectoryChecks(const ADirectories: TStringList; const ACheckWriteRights: Boolean);
     procedure DoFileChecks(const AFiles: TStringList; const ACheckWriteRights: Boolean);
     function PerDirectoryTestCount: Integer;
-    function PerFileTestCount: Integer;
+    function PerFileTestCount(const ACheckWriteRights: Boolean): Integer;
     procedure ReportItem(const AType: TFileSystemType; const AName: string);
     procedure ReportTest(const AType: TFileSystemType; const AName: string);
   public
@@ -126,7 +130,7 @@ type
 implementation
 
 uses
-  Winapi.AccCtrl, System.Math, System.StrUtils, System.Win.Registry;
+  Winapi.AccCtrl, System.Math, System.StrUtils, System.Win.Registry, UnitGetProcessReservingFile;
 
 function IsProcess64Bit: Boolean;
 begin
@@ -716,6 +720,143 @@ begin
   end;
 end;
 
+// Opens the file read-write with share mode 0 — "nobody else may have a handle".
+// This is what database engines and similar single-owner applications ask for, so a
+// file can pass the normal read-write probe yet still be unusable for them: any other
+// process holding the file open (sync client, indexer, another app instance) makes
+// this fail with a sharing violation.
+function TFileRightsChecker.TestOpenFileExclusiveRights(const AFileName: string; var AErrorDescription: string): Boolean;
+var
+  LFileHandle: THandle;
+  LErrorCode: DWORD;
+begin
+  Result := False;
+  AErrorDescription := '';
+
+  try
+    LFileHandle := CreateFile(PChar(ToLongPath(AFileName)), GENERIC_READ or GENERIC_WRITE, 0 { exclusive }, nil,
+      OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
+
+    if LFileHandle = INVALID_HANDLE_VALUE then
+    begin
+      LErrorCode := GetLastError;
+      AErrorDescription := Format('Exclusive-mode open failed [%d]: %s', [LErrorCode, SysErrorMessage(LErrorCode)]);
+
+      CheckToAddMoreInfoForCreateFileFailure(LErrorCode, AErrorDescription);
+
+      Exit;
+    end;
+
+    CloseHandle(LFileHandle);
+
+    Result := True;
+  except
+    on E: Exception do
+      GetExceptionErrorDescription('TestOpenFileExclusiveRights', AFileName, E, AErrorDescription);
+  end;
+end;
+
+// Requests a handle with the DELETE right — this does NOT delete anything, it only
+// asks Windows whether deletion would be permitted. Applications that save via
+// rename/replace (write temp file, delete original, rename temp) need this right:
+// plain writes succeeding while DELETE is denied breaks "save" in exactly the
+// works-only-as-admin way. GENERIC_WRITE does NOT include DELETE, so the normal
+// read-write probe cannot catch it.
+function TFileRightsChecker.TestOpenFileDeleteRights(const AFileName: string; var AErrorDescription: string): Boolean;
+var
+  LFileHandle: THandle;
+  LErrorCode: DWORD;
+begin
+  Result := False;
+  AErrorDescription := '';
+
+  try
+    LFileHandle := CreateFile(PChar(ToLongPath(AFileName)), DELETE,
+      FILE_SHARE_READ or FILE_SHARE_WRITE or FILE_SHARE_DELETE,
+      nil, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
+
+    if LFileHandle = INVALID_HANDLE_VALUE then
+    begin
+      LErrorCode := GetLastError;
+      AErrorDescription := Format('Open with DELETE access failed [%d]: %s', [LErrorCode, SysErrorMessage(LErrorCode)])
+        + ' [Applications saving via rename/replace need DELETE — writes alone are not enough for them]';
+
+      CheckToAddMoreInfoForCreateFileFailure(LErrorCode, AErrorDescription);
+
+      Exit;
+    end;
+
+    CloseHandle(LFileHandle);
+
+    Result := True;
+  except
+    on E: Exception do
+      GetExceptionErrorDescription('TestOpenFileDeleteRights', AFileName, E, AErrorDescription);
+  end;
+end;
+
+// Requests a handle with WRITE_DAC — the right to change the file's permissions.
+// Does NOT modify any ACL, only asks whether it would be allowed. Relevant for
+// applications that adjust ACLs on their own data files; missing WRITE_DAC is
+// normal for users who don't own the file, hence reported as a warning.
+function TFileRightsChecker.TestOpenFileWriteDACRights(const AFileName: string; var AErrorDescription: string): Boolean;
+var
+  LFileHandle: THandle;
+  LErrorCode: DWORD;
+begin
+  Result := False;
+  AErrorDescription := '';
+
+  try
+    LFileHandle := CreateFile(PChar(ToLongPath(AFileName)), WRITE_DAC,
+      FILE_SHARE_READ or FILE_SHARE_WRITE or FILE_SHARE_DELETE,
+      nil, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
+
+    if LFileHandle = INVALID_HANDLE_VALUE then
+    begin
+      LErrorCode := GetLastError;
+      AErrorDescription := Format('Open with WRITE_DAC access failed [%d]: %s', [LErrorCode, SysErrorMessage(LErrorCode)])
+        + ' [Only relevant if the application changes permissions on its files — usually normal for non-owner users]';
+
+      CheckToAddMoreInfoForCreateFileFailure(LErrorCode, AErrorDescription);
+
+      Exit;
+    end;
+
+    CloseHandle(LFileHandle);
+
+    Result := True;
+  except
+    on E: Exception do
+      GetExceptionErrorDescription('TestOpenFileWriteDACRights', AFileName, E, AErrorDescription);
+  end;
+end;
+
+// Asks the Windows Restart Manager which process is holding the file open — the same
+// mechanism installers use for "these programs are locking this file". A Restart
+// Manager session is relatively heavy, so this is only called for files that already
+// FAILED a probe, never for the whole tree. Finds nothing for pure ACL denials, so it
+// adds no noise there.
+function TFileRightsChecker.TryDescribeReservingProcess(const AFileName: string; var ADescription: string): Boolean;
+var
+  LProcessImagePath: string;
+begin
+  Result := False;
+  ADescription := '';
+
+  try
+    // Note: raw path on purpose — Restart Manager does not take \\?\-prefixed names.
+    if GetProcessReservingFile(AFileName, LProcessImagePath) then
+    begin
+      ADescription := Format('File is held open by process: %s', [LProcessImagePath.QuotedString('"')]);
+      Result := True;
+    end;
+  except
+    // Best-effort diagnostic (rstrtmgr.dll missing, session limit reached, ...) —
+    // a failure to identify the holder must not turn into a finding of its own.
+  end;
+end;
+
 // Probes the file with several share modes separately. The most-permissive mode
 // is the same one TestOpenFileRights uses, so success/failure at that level is
 // already reflected there. The point of this function is to surface info from
@@ -1206,7 +1347,7 @@ begin
     InitializeDirectoriesAndFiles(ADirectory, LPass.Files, LPass.SubDirectories, ACheckWriteRights, LLocalErrorDescription);
 
     Inc(FTotalTestsPlanned,
-      LPass.SubDirectories.Count * PerDirectoryTestCount + LPass.Files.Count * PerFileTestCount);
+      LPass.SubDirectories.Count * PerDirectoryTestCount + LPass.Files.Count * PerFileTestCount(ACheckWriteRights));
 
     FPreparedPasses.Add(LPass);
     LPass := nil; // ownership transferred
@@ -1276,13 +1417,17 @@ begin
     Inc(Result);
 end;
 
-function TFileRightsChecker.PerFileTestCount: Integer;
+function TFileRightsChecker.PerFileTestCount(const ACheckWriteRights: Boolean): Integer;
 begin
   // Must match the number of ReportTest calls in DoFileChecks.
   // 9 unconditional (4 attribute tests, path length, DACL, deny ACE, share modes,
-  // primary probe) + up to 2 gated. (TestExecuteRights / GetFileIntegrityLevel are
-  // sub-steps of the primary access probe and don't count separately.)
+  // primary probe) + 3 on write passes (exclusive-open, DELETE, WRITE_DAC) + up to
+  // 2 gated. (TestExecuteRights / GetFileIntegrityLevel / the Restart Manager holder
+  // lookup are sub-steps of their parent probes and don't count separately.)
   Result := 9;
+
+  if ACheckWriteRights then
+    Inc(Result, 3);
 
   if FRunCurrentUserIsOwnerTests then
     Inc(Result);
@@ -1858,7 +2003,9 @@ begin
     // Primary access probe — drives the readable/writable statistic and triggers
     // the "additional info" follow-ups below if it fails.
     LDesc := '';
-    if not TestOpenFileRights(LCurrentFile, ACheckWriteRights, LDesc) then
+    var LPrimaryOpenOk := TestOpenFileRights(LCurrentFile, ACheckWriteRights, LDesc);
+
+    if not LPrimaryOpenOk then
     begin
       var LIntegrityErr: string;
       var LFileIntegrityRID: Integer;
@@ -1887,12 +2034,69 @@ begin
         if not TestExecuteRights(LCurrentFile, LExecDesc) then
           LogError(LCurrentFile, frcUserHasNoExecuteRightsForFile, LExecDesc);
       end;
+
+      // Who is holding the file? For pure ACL denials the Restart Manager finds
+      // nothing; when the failure is sharing-related this names the blocker.
+      var LHolderDesc: string := '';
+      if TryDescribeReservingProcess(LCurrentFile, LHolderDesc) then
+        LogError(LCurrentFile, frcFileReservedByProcess,
+          LHolderDesc + ' — if the open failure above is a sharing violation, this process is the blocker', esWarning);
     end
     else if ACheckWriteRights then
       FReadWriteStatistics.AddCheckedFile
     else
       FReadOnlyStatistics.AddCheckedFile;
     ReportTest(fstFile, LCurrentFile);
+
+    // Exclusive-mode probe — write pass only. A file can be perfectly read-writable
+    // yet unopenable in exclusive mode because some other process holds a handle;
+    // applications that require exclusive access (database engines etc.) fail on
+    // exactly this. Skipped when the plain read-write open already failed — the
+    // exclusive failure would just repeat the same root cause.
+    if ACheckWriteRights then
+    begin
+      if LPrimaryOpenOk then
+      begin
+        LDesc := '';
+        if not TestOpenFileExclusiveRights(LCurrentFile, LDesc) then
+        begin
+          LogError(LCurrentFile, frcExclusiveOpenFailed, LDesc);
+
+          // The exclusive failure is causal: whoever keeps a handle open blocks
+          // exclusive access directly, so name the process as an error.
+          var LHolderDesc: string := '';
+          if TryDescribeReservingProcess(LCurrentFile, LHolderDesc) then
+            LogError(LCurrentFile, frcFileReservedByProcess,
+              LHolderDesc + ' — exclusive access is blocked while this process keeps the file open');
+        end
+        else
+          FReadWriteStatistics.AddCheckedExclusiveFile;
+      end;
+
+      // Fires even when the probe was skipped so progress stays in sync with
+      // PerFileTestCount.
+      ReportTest(fstFile, LCurrentFile);
+
+      // DELETE probe — GENERIC_WRITE does not include DELETE, so an application
+      // that saves via rename/replace can fail even though plain writes succeed.
+      if LPrimaryOpenOk then
+      begin
+        LDesc := '';
+        if not TestOpenFileDeleteRights(LCurrentFile, LDesc) then
+          LogError(LCurrentFile, frcFileNoDeleteRights, LDesc);
+      end;
+      ReportTest(fstFile, LCurrentFile);
+
+      // WRITE_DAC probe — the right to change permissions. Missing it is normal
+      // for non-owner users, hence warning severity.
+      if LPrimaryOpenOk then
+      begin
+        LDesc := '';
+        if not TestOpenFileWriteDACRights(LCurrentFile, LDesc) then
+          LogError(LCurrentFile, frcFileNoWriteDACRights, LDesc, esWarning);
+      end;
+      ReportTest(fstFile, LCurrentFile);
+    end;
   end;
 end;
 

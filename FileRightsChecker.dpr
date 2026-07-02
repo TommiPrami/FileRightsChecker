@@ -7,7 +7,9 @@ uses
   FRCUnit.Settings in 'Source\Units\FRCUnit.Settings.pas',
   FRCUnit.WinAPI in 'Source\Units\FRCUnit.WinAPI.pas',
   FRCUnit.ProgressThrottle in 'Source\Units\FRCUnit.ProgressThrottle.pas',
-  FRCUnit.Statistics in 'Source\Units\FRCUnit.Statistics.pas';
+  FRCUnit.Statistics in 'Source\Units\FRCUnit.Statistics.pas',
+  UnitGetProcessReservingFile in 'Source\3rdParty\Delphi.GetProcessReservingFile\Source\UnitGetProcessReservingFile.pas',
+  UnitGetProcessReservingFile.Types in 'Source\3rdParty\Delphi.GetProcessReservingFile\Source\UnitGetProcessReservingFile.Types.pas';
 
 {$R *.res}
 

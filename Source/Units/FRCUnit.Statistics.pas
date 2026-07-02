@@ -34,7 +34,11 @@ type
     frcReadOnlyVolume,
     frcNonNTFSFileSystem,
     frcLowDiskSpace,
-    frcControlledFolderAccess);
+    frcControlledFolderAccess,
+    frcExclusiveOpenFailed,
+    frcFileReservedByProcess,
+    frcFileNoDeleteRights,
+    frcFileNoWriteDACRights);
 
   // Findings are not all equal: an in-use file or a network-share note is context,
   // not a failure. Errors are things that actually block the customer application.
@@ -80,11 +84,14 @@ type
   strict private
     FFilesChecked: Integer;
     FDirectoriesChecked: Integer;
+    FFilesOpenedExclusively: Integer;
   public
     procedure AddCheckedFile;
     procedure AddCheckedDirectory;
+    procedure AddCheckedExclusiveFile;
     property FilesChecked: Integer read FFilesChecked;
     property DirectoriesChecked: Integer read FDirectoriesChecked;
+    property FilesOpenedExclusively: Integer read FFilesOpenedExclusively;
   end;
 
 implementation
@@ -139,6 +146,10 @@ begin
     frcNonNTFSFileSystem: Result := 'File system has no NTFS ACLs';
     frcLowDiskSpace: Result := 'Low free disk space';
     frcControlledFolderAccess: Result := 'Defender Controlled Folder Access is active';
+    frcExclusiveOpenFailed: Result := 'File cannot be opened in exclusive mode';
+    frcFileReservedByProcess: Result := 'File is held open by another process';
+    frcFileNoDeleteRights: Result := 'User has no DELETE right on file';
+    frcFileNoWriteDACRights: Result := 'User has no WRITE_DAC right on file';
     else
       Result := Format('Unknown error type (%d)', [Ord(FErrorType)]);
   end;
@@ -199,6 +210,11 @@ end;
 procedure TStatistics.AddCheckedFile;
 begin
   Inc(FFilesChecked);
+end;
+
+procedure TStatistics.AddCheckedExclusiveFile;
+begin
+  Inc(FFilesOpenedExclusively);
 end;
 
 end.
