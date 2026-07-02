@@ -85,17 +85,15 @@ type
   end;
   PTOKEN_MANDATORY_LABEL = ^TOKEN_MANDATORY_LABEL;
 
-// Not exposed in Winapi.Windows in all Delphi versions — declare it here so we
-// don't depend on the RTL having it.
-function CheckTokenMembership(TokenHandle: THandle; SidToCheck: PSID;
-  var IsMember: BOOL): BOOL; stdcall;
-  external 'advapi32.dll' name 'CheckTokenMembership';
+  // Not exposed in Winapi.Windows in all Delphi versions — declare it here so we
+  // don't depend on the RTL having it.
+  function CheckTokenMembership(TokenHandle: THandle; SidToCheck: PSID; var IsMember: BOOL): BOOL; stdcall;
+    external 'advapi32.dll' name 'CheckTokenMembership';
 
-// Same story for GetEffectiveRightsFromAclW — Winapi.AccCtrl declares the
-// TRUSTEE_W types but doesn't always declare the function import.
-function GetEffectiveRightsFromAcl(const pacl: TACL; const pTrustee: TRUSTEE_W;
-  var AccessRights: ACCESS_MASK): DWORD; stdcall;
-  external 'advapi32.dll' name 'GetEffectiveRightsFromAclW';
+  // Same story for GetEffectiveRightsFromAclW — Winapi.AccCtrl declares the
+  // TRUSTEE_W types but doesn't always declare the function import.
+  function GetEffectiveRightsFromAcl(const pacl: TACL; const pTrustee: TRUSTEE_W; var AccessRights: ACCESS_MASK): DWORD; stdcall;
+    external 'advapi32.dll' name 'GetEffectiveRightsFromAclW';
 
 implementation
 
