@@ -13,8 +13,7 @@ type
     function DirectoryListToDelimitedString(const AList: TStringList): string;
     function SaveToJSONString: string;
     procedure LoadFromJSONString(const AJSON: string);
-    procedure ParseDirectoriesIntoList(const ASemicolonSeparatedDirectories: string; const AList: TStringList;
-      const AClearList: Boolean);
+    procedure ParseDirectoriesIntoList(const ASemicolonSeparatedDirectories: string; const AList: TStringList; const AClearList: Boolean);
     procedure SetReadOnlyDirectories(const AValue: TStringList);
     procedure SetReadWriteDirectories(const AValue: TStringList);
   public
