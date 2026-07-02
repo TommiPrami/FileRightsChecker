@@ -16,9 +16,10 @@ type
   TFileSystemItemCallBack = procedure(const AType: TFileSystemType; const AName: string) of object;
 
   // Fired after each individual test (each diagnostic call) completes. AErrorsCount is
-  // the running total of errors logged so far; AProgress is 0.0 .. 100.0.
-  TTestCallBack = procedure(const AType: TFileSystemType; const AName: string;
-    const ATestCount: Integer; const AErrorsCount: Integer; const AProgress: Double) of object;
+  // the running total of esError-severity findings (warnings and info lines are not
+  // counted); AProgress is 0.0 .. 100.0.
+  TTestCallBack = procedure(const AType: TFileSystemType; const AName: string; const ATestCount: Integer; const AErrorsCount: Integer;
+    const AProgress: Double) of object;
 
   // Internal: holds the result of a single PreparePass call. Owns its TStringLists;
   // RunPreparedPasses iterates these without touching disk for enumeration.
@@ -51,6 +52,7 @@ type
     FTotalTestsPlanned: Integer;
     FTestsExecuted: Integer;
     FPreparedPasses: TObjectList<TPreparedPass>;
+    FProcessIntegrityRID: Integer;
     function GetTempFileName(const ADirectory: string): string;
     function HasExplicitDenyACE(const ADirectory: string; var AErrorDescription: string): Boolean;
     function TestDirectoryReadRights(const ADirectory: string; var AErrorDescription: string): Boolean;
@@ -62,12 +64,15 @@ type
     function HasEmptyDACL(const ADirectory: string; var AErrorDescription: string): Boolean;
     function IsDirectoryUnderUACVirtualization(const ADirectory: string; var AErrorDescription: string): Boolean;
     function HasPrivilege(const APrivilegeName: string; var AErrorDescription: string): Boolean;
-    function IsReparsePoint(const ADirectory: string; var AErrorDescription: string): Boolean;
-    function GetFileIntegrityLevel(const ADirectory: string; var AErrorDescription: string): string;
+    function GetFileIntegrityLevel(const ADirectory: string; out AIntegrityRID: Integer; var AErrorDescription: string): string;
     function IsDirectoryEmpty(const ADirectory: string): Boolean;
     function DiagnoseFileShareModes(const AFileName: string; const AInReadWriteMode: Boolean; var AErrorDescription: string): Boolean;
-    function HasReadOnlyAttribute(const APath: string; var AErrorDescription: string): Boolean;
-    function IsEFSEncrypted(const APath: string; var AErrorDescription: string): Boolean;
+    function TryGetAttributes(const APath: string; out AAttributes: DWORD; var AErrorDescription: string): Boolean;
+    function IsReparsePoint(const AAttributes: DWORD; const APath: string; var AErrorDescription: string): Boolean;
+    function HasReadOnlyAttribute(const AAttributes: DWORD; var AErrorDescription: string): Boolean;
+    function IsEFSEncrypted(const AAttributes: DWORD; var AErrorDescription: string): Boolean;
+    function HasCloudOrOfflineAttribute(const AAttributes: DWORD; var AErrorDescription: string): Boolean;
+    function IsPathTooLong(const APath: string; var AErrorDescription: string): Boolean;
     function IsOnNetworkShare(const APath: string; var AErrorDescription: string): Boolean;
     function CurrentUserIsOwner(const APath: string; var AErrorDescription: string): Boolean;
     function GetEffectiveRightsShortfall(const APath: string; const ACheckWriteRights: Boolean; var AErrorDescription: string): Boolean;
@@ -75,9 +80,13 @@ type
     procedure GetExceptionErrorDescription(const AErrorMethod, AFileSystemItem: string; const AException: Exception; var AErrorDescription: string);
     procedure GetFilesAndDirs(const ADirectory: string; const AFiles, ADirectories: TStringList;  var AErrorDescription: string;
       const AClearLists: Boolean = True);
-    procedure LogError(const AFileSystemItem: string; const AErrorType: TFileRightErrorType; const AErrorDescription: string);
+    procedure LogError(const AFileSystemItem: string; const AErrorType: TFileRightErrorType; const AErrorDescription: string;
+      const ASeverity: TErrorSeverity = esError);
     procedure CheckProcessBackupPrivileges(const ADirectory: string);
-    procedure InitializeDirectoriesAndFiles(const ADirectory: string; const AFiles, ASubDirectories: TStringList; var AErrorDescription: string);
+    procedure CheckVolumeInfo(const ADirectory: string; const ACheckWriteRights: Boolean);
+    procedure CheckControlledFolderAccess;
+    procedure InitializeDirectoriesAndFiles(const ADirectory: string; const AFiles, ASubDirectories: TStringList;
+      const ACheckWriteRights: Boolean; var AErrorDescription: string);
     procedure DoDirectoryChecks(const ADirectories: TStringList; const ACheckWriteRights: Boolean);
     procedure DoFileChecks(const AFiles: TStringList; const ACheckWriteRights: Boolean);
     function PerDirectoryTestCount: Integer;
@@ -99,6 +108,11 @@ type
     procedure PreparePass(const ADirectory: string; const ACheckWriteRights: Boolean);
     procedure RunPreparedPasses;
 
+    // One-line summary of who is running the scan and how — user, elevation,
+    // process integrity level, bitness, long-path mode. Log this at the top of a
+    // run: support cannot interpret customer results without it.
+    function RunContextDescription: string;
+
     property Errors: TErrorItemCollection read FErrors;
     property ReadWriteStatistics: TStatistics read FReadWriteStatistics;
     property ReadOnlyStatistics: TStatistics read FReadOnlyStatistics;
@@ -112,11 +126,92 @@ type
 implementation
 
 uses
-  Winapi.AccCtrl, System.Math, System.StrUtils;
+  Winapi.AccCtrl, System.Math, System.StrUtils, System.Win.Registry;
 
 function IsProcess64Bit: Boolean;
 begin
   Result := SizeOf(Pointer) = 8;
+end;
+
+// Maps a mandatory-integrity RID to its human name. -1 means "could not determine".
+function IntegrityRIDToDescription(const ARID: Integer): string;
+begin
+  case ARID of
+    -1:    Result := 'Unknown';
+    $0000: Result := 'Untrusted';
+    $1000: Result := 'Low';
+    $2000: Result := 'Medium';
+    $2100: Result := 'Medium Plus';
+    $3000: Result := 'High';
+    $4000: Result := 'System';
+    $5000: Result := 'Protected Process';
+    else
+      Result := Format('Unknown (RID: 0x%.4x)', [ARID]);
+  end;
+end;
+
+// Integrity level of the current process token, as the raw RID ($2000 = Medium,
+// $3000 = High/elevated...). Returns -1 if it cannot be determined.
+function GetProcessIntegrityRID: Integer;
+type
+  PLocalTokenMandatoryLabel = ^TOKEN_MANDATORY_LABEL;
+var
+  LTokenHandle: THandle;
+  LBuf: array[0..255] of Byte;
+  LRetLen: DWORD;
+  LLabel: PLocalTokenMandatoryLabel;
+  LCount: DWORD;
+begin
+  Result := -1;
+  LRetLen := 0;
+
+  if not OpenProcessToken(GetCurrentProcess, TOKEN_QUERY, LTokenHandle) then
+    Exit;
+
+  try
+    if not GetTokenInformation(LTokenHandle, TTokenInformationClass(TOKEN_INTEGRITY_LEVEL_INFO_CLASS),
+       @LBuf[0], Length(LBuf), LRetLen) then
+      Exit;
+
+    LLabel := PLocalTokenMandatoryLabel(@LBuf[0]);
+    LCount := GetSidSubAuthorityCount(LLabel^.Label_.Sid)^;
+    Result := Integer(GetSidSubAuthority(LLabel^.Label_.Sid, LCount - 1)^);
+  finally
+    CloseHandle(LTokenHandle);
+  end;
+end;
+
+// DOMAIN\user of the current process token, or 'Unknown' if it cannot be resolved.
+function GetTokenUserName: string;
+type
+  PLocalTokenUser = ^TOKEN_USER;
+var
+  LTokenHandle: THandle;
+  LBuf: array[0..511] of Byte;
+  LRetLen: DWORD;
+  LName: array[0..255] of Char;
+  LDomain: array[0..255] of Char;
+  LNameLen, LDomainLen: DWORD;
+  LUse: SID_NAME_USE;
+begin
+  Result := 'Unknown';
+  LRetLen := 0;
+
+  if not OpenProcessToken(GetCurrentProcess, TOKEN_QUERY, LTokenHandle) then
+    Exit;
+
+  try
+    if not GetTokenInformation(LTokenHandle, TokenUser, @LBuf[0], Length(LBuf), LRetLen) then
+      Exit;
+
+    LNameLen := Length(LName);
+    LDomainLen := Length(LDomain);
+
+    if LookupAccountSid(nil, PLocalTokenUser(@LBuf[0])^.User.Sid, LName, LNameLen, LDomain, LDomainLen, LUse) then
+      Result := string(LDomain) + '\' + string(LName);
+  finally
+    CloseHandle(LTokenHandle);
+  end;
 end;
 
 // Returns True only if the SID denotes the current effective user or one of their groups.
@@ -144,7 +239,7 @@ end;
 { TFileRightsChecker }
 
 procedure TFileRightsChecker.InitializeDirectoriesAndFiles(const ADirectory: string; const AFiles, ASubDirectories: TStringList;
-  var AErrorDescription: string);
+  const ACheckWriteRights: Boolean; var AErrorDescription: string);
 begin
   AErrorDescription := '';
 
@@ -162,6 +257,10 @@ begin
       LogError(LTrimmed, frcDirectoryNotReadable, 'Top-level directory does not exist or is not accessible');
       Continue;
     end;
+
+    // Volume-level context (network share, filesystem type, read-only volume,
+    // free space) is per-root, so check it once here instead of per item.
+    CheckVolumeInfo(LTrimmed, ACheckWriteRights);
 
     var LPerDirError: string := '';
     GetFilesAndDirs(LTrimmed, AFiles, ASubDirectories, LPerDirError, False);
@@ -437,9 +536,10 @@ begin
   Result := IncludeTrailingPathDelimiter(ADirectory) + 'FileRightsChecker_' + CleanGUID(GUIDToString(LGUID)) + '.tmp';
 end;
 
-procedure TFileRightsChecker.LogError(const AFileSystemItem: string; const AErrorType: TFileRightErrorType; const AErrorDescription: string);
+procedure TFileRightsChecker.LogError(const AFileSystemItem: string; const AErrorType: TFileRightErrorType; const AErrorDescription: string;
+  const ASeverity: TErrorSeverity = esError);
 begin
-  var LErrorItem := TErrorItem.Create(AFileSystemItem, AErrorType, AErrorDescription);
+  var LErrorItem := TErrorItem.Create(AFileSystemItem, AErrorType, AErrorDescription, ASeverity);
 
   Errors.Add(LErrorItem);
 end;
@@ -478,11 +578,18 @@ begin
       begin
         LErrorCode := GetLastError;
         AErrorDescription := Format('WriteFile failed [%d]: %s', [LErrorCode, SysErrorMessage(LErrorCode)]);
-
-        Exit;
+        CheckToAddMoreInfoForCreateFileFailure(LErrorCode, AErrorDescription);
       end;
     finally
       CloseHandle(LFileHandle);
+    end;
+
+    // Write failed: still try to remove the test file so we don't litter the
+    // customer's directory; the write error above is what gets reported.
+    if not AErrorDescription.IsEmpty then
+    begin
+      DeleteFile(PChar(ToLongPath(LTempFile)));
+      Exit;
     end;
 
     // --- Delete ---
@@ -517,6 +624,8 @@ begin
       LErrorCode := GetLastError;
       AErrorDescription := Format('Directory read rights check failed [%d]: %s', [LErrorCode, SysErrorMessage(LErrorCode)]);
 
+      CheckToAddMoreInfoForCreateFileFailure(LErrorCode, AErrorDescription);
+
       Exit;
     end;
 
@@ -549,6 +658,8 @@ begin
       begin
         LErrorCode := GetLastError;
         AErrorDescription := Format('Execute rights check failed [%d]: %s', [LErrorCode, SysErrorMessage(LErrorCode)]);
+
+        CheckToAddMoreInfoForCreateFileFailure(LErrorCode, AErrorDescription);
 
         Exit;
       end;
@@ -590,6 +701,8 @@ begin
     begin
       LErrorCode := GetLastError;
       AErrorDescription := Format('OpenFile failed [%d]: %s', [LErrorCode, SysErrorMessage(LErrorCode)]);
+
+      CheckToAddMoreInfoForCreateFileFailure(LErrorCode, AErrorDescription);
 
       Exit;
     end;
@@ -675,71 +788,103 @@ begin
   end;
 end;
 
-function TFileRightsChecker.HasReadOnlyAttribute(const APath: string; var AErrorDescription: string): Boolean;
+// Fetches the attribute bits once per item; the individual attribute checks below are
+// pure bit tests on this value. One syscall instead of three-plus — matters a lot on
+// network shares where every call is a round trip.
+function TFileRightsChecker.TryGetAttributes(const APath: string; out AAttributes: DWORD; var AErrorDescription: string): Boolean;
 var
-  LAttributes: DWORD;
   LErr: DWORD;
 begin
   Result := False;
   AErrorDescription := '';
+  AAttributes := INVALID_FILE_ATTRIBUTES;
 
   try
-    LAttributes := GetFileAttributes(PChar(ToLongPath(APath)));
+    AAttributes := GetFileAttributes(PChar(ToLongPath(APath)));
 
-    if LAttributes = INVALID_FILE_ATTRIBUTES then
+    if AAttributes = INVALID_FILE_ATTRIBUTES then
     begin
       LErr := GetLastError;
       AErrorDescription := Format('GetFileAttributes failed [%d]: %s', [LErr, SysErrorMessage(LErr)]);
 
+      CheckToAddMoreInfoForCreateFileFailure(LErr, AErrorDescription);
+
       Exit;
     end;
 
-    if (LAttributes and FILE_ATTRIBUTE_READONLY) <> 0 then
-    begin
-      // On directories Windows treats this as "special folder" rather than a true write-block,
-      // but applications and installers still routinely refuse to write to such folders.
-      if (LAttributes and FILE_ATTRIBUTE_DIRECTORY) <> 0 then
-        AErrorDescription := 'Directory has read-only attribute (cosmetic on Win32 but many apps refuse to write here)'
-      else
-        AErrorDescription := 'File has read-only attribute — write opens via CreateFile will fail with ACCESS_DENIED';
-
-      Result := True;
-    end;
+    Result := True;
   except
     on E: Exception do
-      GetExceptionErrorDescription('HasReadOnlyAttribute', APath, E, AErrorDescription);
+      GetExceptionErrorDescription('TryGetAttributes', APath, E, AErrorDescription);
   end;
 end;
 
-function TFileRightsChecker.IsEFSEncrypted(const APath: string; var AErrorDescription: string): Boolean;
-var
-  LAttributes: DWORD;
-  LErr: DWORD;
+function TFileRightsChecker.IsReparsePoint(const AAttributes: DWORD; const APath: string; var AErrorDescription: string): Boolean;
 begin
-  Result := False;
-  AErrorDescription := '';
+  Result := (AAttributes and FILE_ATTRIBUTE_REPARSE_POINT) <> 0;
 
-  try
-    LAttributes := GetFileAttributes(PChar(ToLongPath(APath)));
+  if Result then
+    AErrorDescription := Format('Path is a reparse point (junction or symlink) — target location may have different access rights: %s',
+      [APath])
+  else
+    AErrorDescription := '';
+end;
 
-    if LAttributes = INVALID_FILE_ATTRIBUTES then
-    begin
-      LErr := GetLastError;
-      AErrorDescription := Format('GetFileAttributes failed [%d]: %s', [LErr, SysErrorMessage(LErr)]);
+function TFileRightsChecker.HasReadOnlyAttribute(const AAttributes: DWORD; var AErrorDescription: string): Boolean;
+begin
+  Result := (AAttributes and FILE_ATTRIBUTE_READONLY) <> 0;
 
-      Exit;
-    end;
+  if Result then
+  begin
+    // On directories Windows treats this as "special folder" rather than a true write-block,
+    // but applications and installers still routinely refuse to write to such folders.
+    if (AAttributes and FILE_ATTRIBUTE_DIRECTORY) <> 0 then
+      AErrorDescription := 'Directory has read-only attribute (cosmetic on Win32 but many apps refuse to write here)'
+    else
+      AErrorDescription := 'File has read-only attribute — write opens via CreateFile will fail with ACCESS_DENIED';
+  end
+  else
+    AErrorDescription := '';
+end;
 
-    if (LAttributes and FILE_ATTRIBUTE_ENCRYPTED) <> 0 then
-    begin
-      AErrorDescription := 'EFS-encrypted — only the encrypting user (and designated recovery agents) can decrypt; '
-        + 'a different user account, even Administrator, may get ACCESS_DENIED on read';
-      Result := True;
-    end;
-  except
-    on E: Exception do
-      GetExceptionErrorDescription('IsEFSEncrypted', APath, E, AErrorDescription);
-  end;
+function TFileRightsChecker.IsEFSEncrypted(const AAttributes: DWORD; var AErrorDescription: string): Boolean;
+begin
+  Result := (AAttributes and FILE_ATTRIBUTE_ENCRYPTED) <> 0;
+
+  if Result then
+    AErrorDescription := 'EFS-encrypted — only the encrypting user (and designated recovery agents) can decrypt; '
+      + 'a different user account, even Administrator, may get ACCESS_DENIED on read'
+  else
+    AErrorDescription := '';
+end;
+
+function TFileRightsChecker.HasCloudOrOfflineAttribute(const AAttributes: DWORD; var AErrorDescription: string): Boolean;
+begin
+  Result := (AAttributes and (FILE_ATTRIBUTE_OFFLINE_BIT or FILE_ATTRIBUTE_RECALL_ON_OPEN
+    or FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS)) <> 0;
+
+  if Result then
+    AErrorDescription := 'File is offline or a cloud placeholder (OneDrive, Dropbox, HSM) — opening it triggers '
+      + 'network hydration and can hang, fail, or succeed only when the sync client is running and signed in'
+  else
+    AErrorDescription := '';
+end;
+
+function TFileRightsChecker.IsPathTooLong(const APath: string; var AErrorDescription: string): Boolean;
+begin
+  Result := Length(APath) >= MAX_PATH;
+
+  if Result then
+  begin
+    AErrorDescription := Format('Full path is %d characters (MAX_PATH is 260) — applications built without '
+      + 'long-path support cannot open this item even with correct permissions', [Length(APath)]);
+
+    if not FOpenFilesLongFileAndPathNameSupport then
+      AErrorDescription := AErrorDescription
+        + ' [long-path support is OFF in this scan too, so the probes below may fail for this same reason]';
+  end
+  else
+    AErrorDescription := '';
 end;
 
 function TFileRightsChecker.IsOnNetworkShare(const APath: string; var AErrorDescription: string): Boolean;
@@ -944,9 +1089,12 @@ begin
 
       LRights := 0;
 
-      if GetEffectiveRightsFromAcl(LDACL^, LTrustee, LRights) <> ERROR_SUCCESS then
+      // GetEffectiveRightsFromAcl returns its error code directly — it does NOT
+      // set GetLastError like BOOL-returning APIs do.
+      LErr := GetEffectiveRightsFromAcl(LDACL^, LTrustee, LRights);
+
+      if LErr <> ERROR_SUCCESS then
       begin
-        LErr := GetLastError;
         AErrorDescription := Format('GetEffectiveRightsFromAcl failed [%d]: %s', [LErr, SysErrorMessage(LErr)]);
 
         Exit;
@@ -1055,7 +1203,7 @@ begin
   var LPass := TPreparedPass.Create(ACheckWriteRights);
   try
     var LLocalErrorDescription: string := '';
-    InitializeDirectoriesAndFiles(ADirectory, LPass.Files, LPass.SubDirectories, LLocalErrorDescription);
+    InitializeDirectoriesAndFiles(ADirectory, LPass.Files, LPass.SubDirectories, ACheckWriteRights, LLocalErrorDescription);
 
     Inc(FTotalTestsPlanned,
       LPass.SubDirectories.Count * PerDirectoryTestCount + LPass.Files.Count * PerFileTestCount);
@@ -1070,6 +1218,15 @@ end;
 procedure TFileRightsChecker.RunPreparedPasses;
 begin
   try
+    // Defender Controlled Folder Access is per-application, not per-path, so one
+    // check covers the whole run. Only meaningful when writes are being tested.
+    for var LPass in FPreparedPasses do
+      if LPass.CheckWriteRights then
+      begin
+        CheckControlledFolderAccess;
+        Break;
+      end;
+
     for var LPass in FPreparedPasses do
     begin
       if LPass.SubDirectories.Count >= 1 then
@@ -1084,7 +1241,7 @@ begin
     begin
       FTestsExecuted := FTotalTestsPlanned;
       if Assigned(FOnTest) then
-        FOnTest(fstFile, '', FTestsExecuted, FErrors.Count, 100.0);
+        FOnTest(fstFile, '', FTestsExecuted, FErrors.ErrorCount, 100.0);
     end;
   finally
     // Drop the prepared passes so the next PreparePass call starts a fresh batch.
@@ -1093,11 +1250,24 @@ begin
   end;
 end;
 
+function TFileRightsChecker.RunContextDescription: string;
+var
+  LElevationError: string;
+begin
+  Result := Format('Run context: User: %s | Elevated: %s | Process integrity: %s | Process: %s | Long path support: %s',
+    [GetTokenUserName,
+     IfThen(IsRunningElevated(LElevationError), 'Yes', 'No'),
+     IntegrityRIDToDescription(FProcessIntegrityRID),
+     IfThen(IsProcess64Bit, '64-bit', '32-bit'),
+     IfThen(FOpenFilesLongFileAndPathNameSupport, 'On', 'Off')]);
+end;
+
 function TFileRightsChecker.PerDirectoryTestCount: Integer;
 begin
   // Must match the number of ReportTest calls in DoDirectoryChecks.
-  // 8 unconditional + up to 2 gated.
-  Result := 8;
+  // 9 unconditional (4 attribute tests, path length, DACL, deny ACE, UAC
+  // virtualization, primary probe) + up to 2 gated.
+  Result := 9;
 
   if FRunCurrentUserIsOwnerTests then
     Inc(Result);
@@ -1109,9 +1279,10 @@ end;
 function TFileRightsChecker.PerFileTestCount: Integer;
 begin
   // Must match the number of ReportTest calls in DoFileChecks.
-  // 8 unconditional + up to 2 gated. (TestExecuteRights / GetFileIntegrityLevel are
+  // 9 unconditional (4 attribute tests, path length, DACL, deny ACE, share modes,
+  // primary probe) + up to 2 gated. (TestExecuteRights / GetFileIntegrityLevel are
   // sub-steps of the primary access probe and don't count separately.)
-  Result := 8;
+  Result := 9;
 
   if FRunCurrentUserIsOwnerTests then
     Inc(Result);
@@ -1144,7 +1315,7 @@ begin
   if LProgress > 100.0 then
     LProgress := 100.0;
 
-  FOnTest(AType, AName, FTestsExecuted, FErrors.Count, LProgress);
+  FOnTest(AType, AName, FTestsExecuted, FErrors.ErrorCount, LProgress);
 end;
 
 function TFileRightsChecker.IsDirectoryUnderUACVirtualization(const ADirectory: string; var AErrorDescription: string): Boolean;
@@ -1237,45 +1408,14 @@ begin
   end;
 end;
 
-function TFileRightsChecker.IsReparsePoint(const ADirectory: string; var AErrorDescription: string): Boolean;
-var
-  LAttributes: DWORD;
-  LErrorCode: DWORD;
-begin
-  Result := False;
-  AErrorDescription := '';
-
-  try
-    LAttributes := GetFileAttributes(PChar(ToLongPath(ADirectory)));
-
-    if LAttributes = INVALID_FILE_ATTRIBUTES then
-    begin
-      LErrorCode := GetLastError;
-      AErrorDescription := Format('GetFileAttributes failed [%d]: %s', [LErrorCode, SysErrorMessage(LErrorCode)]);
-
-      Exit;
-    end;
-
-    if (LAttributes and FILE_ATTRIBUTE_REPARSE_POINT) <> 0 then
-    begin
-      AErrorDescription := Format('Path is a reparse point (junction or symlink) — ' + 'target location may have different access rights: %s',
-        [ADirectory]);
-
-      Result := True;
-    end;
-  except
-    on E: Exception do
-      GetExceptionErrorDescription('IsReparsePoint', ADirectory, E, AErrorDescription);
-  end;
-end;
-
 procedure TFileRightsChecker.GetExceptionErrorDescription(const AErrorMethod, AFileSystemItem: string; const AException: Exception; var AErrorDescription: string);
 begin
   AErrorDescription := 'Exception ' + AException.ClassName + ' occurred at ' + AErrorMethod.QuotedString('"')  + ' with message: '
     + AException.Message.QuotedString('"') + '. While checking file system item: ' + AFileSystemItem.QuotedString('"');
 end;
 
-function TFileRightsChecker.GetFileIntegrityLevel(const ADirectory: string; var AErrorDescription: string): string;
+function TFileRightsChecker.GetFileIntegrityLevel(const ADirectory: string; out AIntegrityRID: Integer;
+  var AErrorDescription: string): string;
 var
   LFileHandle: THandle;
   LSecDesc: PSECURITY_DESCRIPTOR;
@@ -1283,10 +1423,10 @@ var
   LErrorCode: DWORD;
   LLabel: PTOKEN_MANDATORY_LABEL;
   LRIDCount: DWORD;
-  LRID: DWORD;
 begin
   Result := '';
   AErrorDescription := '';
+  AIntegrityRID := -1;
   LBytesNeeded := 0;
 
   try
@@ -1306,6 +1446,8 @@ begin
 
       if LBytesNeeded = 0 then
       begin
+        // Unlabeled objects are implicitly Medium.
+        AIntegrityRID := $2000;
         Result := 'No integrity label — defaults to Medium';
 
         Exit;
@@ -1325,20 +1467,9 @@ begin
 
         // Get the last sub-authority which is the integrity RID
         LRIDCount := GetSidSubAuthorityCount(LLabel^.Label_.Sid)^;
-        LRID := GetSidSubAuthority(LLabel^.Label_.Sid, LRIDCount - 1)^;
+        AIntegrityRID := Integer(GetSidSubAuthority(LLabel^.Label_.Sid, LRIDCount - 1)^);
 
-        case LRID of
-          $0000: Result := 'Untrusted';
-          $1000: Result := 'Low';
-          $2000: Result := 'Medium';
-          $2100: Result := 'Medium Plus';
-          $3000: Result := 'High';
-          $4000: Result := 'System';
-          $5000: Result := 'Protected Process';
-          else
-            Result := Format('Unknown (RID: 0x%.4x)', [LRID]);
-        end;
-
+        Result := IntegrityRIDToDescription(AIntegrityRID);
       finally
         FreeMem(LSecDesc);
       end;
@@ -1355,26 +1486,155 @@ procedure TFileRightsChecker.CheckProcessBackupPrivileges(const ADirectory: stri
 begin
   var LPrivilegeDescription: string := '';
 
+  // Missing backup/restore/security privileges are normal for non-elevated processes,
+  // so these are warnings (context), not errors.
   if not HasPrivilege(SE_BACKUP_NAME, LPrivilegeDescription) then
-    LogError(ADirectory, frcMissingPrivilege, LPrivilegeDescription);
+    LogError(ADirectory, frcMissingPrivilege, LPrivilegeDescription, esWarning);
 
   if not HasPrivilege(SE_RESTORE_NAME, LPrivilegeDescription) then
-    LogError(ADirectory, frcMissingPrivilege, LPrivilegeDescription);
+    LogError(ADirectory, frcMissingPrivilege, LPrivilegeDescription, esWarning);
 
   if not HasPrivilege(SE_SECURITY_NAME, LPrivilegeDescription) then
-    LogError(ADirectory, frcMissingPrivilege, LPrivilegeDescription);
+    LogError(ADirectory, frcMissingPrivilege, LPrivilegeDescription, esWarning);
 end;
 
-procedure TFileRightsChecker.CheckToAddMoreInfoForCreateFileFailure(const AErrorCode: DWORD; var AErrorDescription: string);
+// Volume-level facts that decide read/writeability before any ACL is even looked at.
+// Called once per top-level scan root — not per item.
+procedure TFileRightsChecker.CheckVolumeInfo(const ADirectory: string; const ACheckWriteRights: Boolean);
+const
+  LOW_DISK_SPACE_WARNING_BYTES = Int64(100) * 1024 * 1024; // 100 MB
+var
+  LRootBuf: array[0..MAX_PATH] of Char;
+  LFSNameBuf: array[0..63] of Char;
+  LFlags: DWORD;
+  LMaxComponentLength: DWORD;
+  LRoot: string;
+  LFreeAvailable: Int64;
+  LTotal: Int64;
+  LDesc: string;
 begin
-  if AErrorCode = ERROR_ACCESS_DENIED then
-  begin
-    if IsRunningElevated(AErrorDescription) then
-      AErrorDescription := AErrorDescription + ' [Process IS elevated — likely explicit DENY ACE or EFS encryption]'
+  try
+    // Network share is per-root context — SMB share permissions apply on top of NTFS.
+    LDesc := '';
+    if IsOnNetworkShare(ADirectory, LDesc) then
+      LogError(ADirectory, frcNetworkShare, LDesc, esInfo);
+
+    // GetVolumePathName resolves mount points correctly ('C:\Mount\Data\x' can live
+    // on a different volume than C:).
+    if GetVolumePathName(PChar(ADirectory), LRootBuf, Length(LRootBuf)) then
+      LRoot := LRootBuf
     else
-      AErrorDescription := AErrorDescription
-        + ' [Process is NOT elevated — re-run as Administrator to confirm. If that succeeds, likely cause is UAC token filtering,'
-        + ' explicit DENY ACE, or EFS encryption]';
+      LRoot := IncludeTrailingPathDelimiter(ExtractFileDrive(ADirectory));
+
+    LFlags := 0;
+    LMaxComponentLength := 0;
+
+    if GetVolumeInformation(PChar(LRoot), nil, 0, nil, LMaxComponentLength, LFlags, LFSNameBuf, Length(LFSNameBuf)) then
+    begin
+      var LFSName: string := LFSNameBuf;
+
+      // FAT32/exFAT have no ACLs at all: every ACL-flavored finding is moot, and
+      // per-user permissions can never be the cause of failures on these volumes.
+      if not SameText(LFSName, 'NTFS') and not SameText(LFSName, 'ReFS') then
+        LogError(ADirectory, frcNonNTFSFileSystem,
+          Format('File system on %s is %s — it has no NTFS ACLs, so per-user permissions cannot be the cause of access '
+            + 'failures here (and ACL-related findings do not apply)', [LRoot, LFSName]), esInfo);
+
+      if ACheckWriteRights and ((LFlags and FILE_READ_ONLY_VOLUME) <> 0) then
+        LogError(ADirectory, frcReadOnlyVolume,
+          Format('Volume %s is READ-ONLY — every write fails regardless of ACLs or elevation', [LRoot]));
+    end;
+
+    if ACheckWriteRights and GetDiskFreeSpaceEx(PChar(LRoot), LFreeAvailable, LTotal, nil) then
+      if LFreeAvailable < LOW_DISK_SPACE_WARNING_BYTES then
+        LogError(ADirectory, frcLowDiskSpace,
+          Format('Only %d MB free for the current user on %s — writes may fail with disk-full or quota errors',
+            [LFreeAvailable div (1024 * 1024), LRoot]), esWarning);
+  except
+    on E: Exception do
+    begin
+      var LExceptionDesc: string := '';
+      GetExceptionErrorDescription('CheckVolumeInfo', ADirectory, E, LExceptionDesc);
+      LogError(ADirectory, frcNone, LExceptionDesc, esWarning);
+    end;
+  end;
+end;
+
+// Windows Defender Controlled Folder Access denies writes per APPLICATION, regardless
+// of ACLs or elevation — a classic cause of "ACCESS_DENIED but the permissions look
+// fine". Checked once per run (best effort; the key may be unreadable).
+procedure TFileRightsChecker.CheckControlledFolderAccess;
+const
+  CFA_KEY = 'SOFTWARE\Microsoft\Windows Defender\Windows Defender Exploit Guard\Controlled Folder Access';
+  CFA_VALUE = 'EnableControlledFolderAccess';
+begin
+  try
+    var LRegistry := TRegistry.Create(KEY_READ or KEY_WOW64_64KEY);
+    try
+      LRegistry.RootKey := HKEY_LOCAL_MACHINE;
+
+      if LRegistry.OpenKeyReadOnly(CFA_KEY) and LRegistry.ValueExists(CFA_VALUE) then
+        case LRegistry.ReadInteger(CFA_VALUE) of
+          1: LogError('<system>', frcControlledFolderAccess,
+               'Windows Defender Controlled Folder Access is ENABLED (block mode) — writes into protected folders are '
+               + 'denied per-application regardless of NTFS ACLs or elevation. If only this application fails with '
+               + 'ACCESS_DENIED, check Defender''s protected-folders and allowed-apps lists', esWarning);
+          2: LogError('<system>', frcControlledFolderAccess,
+               'Windows Defender Controlled Folder Access is in AUDIT mode — writes are allowed but audited', esInfo);
+        end;
+    finally
+      LRegistry.Free;
+    end;
+  except
+    // The Defender registry area can be ACL-restricted; this is best-effort context,
+    // so silently skip when unreadable.
+  end;
+end;
+
+// Appends a plain-language likely cause to a failed CreateFile / GetFileAttributes
+// error message, based on the Win32 error code. This is the piece of text a support
+// person actually acts on.
+procedure TFileRightsChecker.CheckToAddMoreInfoForCreateFileFailure(const AErrorCode: DWORD; var AErrorDescription: string);
+var
+  LElevationDummy: string;
+begin
+  case AErrorCode of
+    ERROR_ACCESS_DENIED:
+      if IsRunningElevated(LElevationDummy) then
+        AErrorDescription := AErrorDescription
+          + ' [Process IS elevated — likely explicit DENY ACE, EFS encryption, mandatory integrity label,'
+          + ' or Defender Controlled Folder Access]'
+      else
+        AErrorDescription := AErrorDescription
+          + ' [Process is NOT elevated — re-run as Administrator to confirm. If that succeeds, likely cause is UAC token filtering,'
+          + ' explicit DENY ACE, or EFS encryption]';
+
+    ERROR_WRITE_PROTECT:
+      AErrorDescription := AErrorDescription + ' [Media or volume is write-protected — no ACL change will help]';
+
+    ERROR_SHARING_VIOLATION:
+      AErrorDescription := AErrorDescription + ' [File is open in another process with an incompatible share mode — not a permissions problem]';
+
+    ERROR_LOCK_VIOLATION:
+      AErrorDescription := AErrorDescription + ' [Another process holds a byte-range lock on the file — not a permissions problem]';
+
+    ERROR_HANDLE_DISK_FULL, ERROR_DISK_FULL:
+      AErrorDescription := AErrorDescription + ' [Disk is full — writes fail regardless of permissions]';
+
+    ERROR_DISK_QUOTA_EXCEEDED:
+      AErrorDescription := AErrorDescription + ' [Per-user disk quota exceeded — an administrator or another user may still be able to write]';
+
+    ERROR_FILENAME_EXCED_RANGE:
+      AErrorDescription := AErrorDescription + ' [Path exceeds MAX_PATH (260) — the application needs long-path support to open this]';
+
+    ERROR_NETWORK_ACCESS_DENIED:
+      AErrorDescription := AErrorDescription + ' [Denied at the SMB SHARE level — check share permissions on the server, not NTFS ACLs]';
+
+    ERROR_INVALID_NAME:
+      AErrorDescription := AErrorDescription + ' [Path contains characters or a form Windows cannot parse — not a permissions problem]';
+
+    ERROR_CANT_ACCESS_FILE:
+      AErrorDescription := AErrorDescription + ' [File cannot be accessed by the system — often a broken reparse point or a cloud placeholder whose sync provider is unavailable]';
   end;
 end;
 
@@ -1388,6 +1648,8 @@ begin
   FReadWriteStatistics := TStatistics.Create;
   FErrors := TErrorItemCollection.Create;
   FPreparedPasses := TObjectList<TPreparedPass>.Create(True);
+  // Cached once — needed for the file-vs-process integrity comparison on failures.
+  FProcessIntegrityRID := GetProcessIntegrityRID;
   FOpenFilesLongFileAndPathNameSupport := AOpenFilesLongFileAndPathNameSupport;
   FCheckProcessBackupPrivileges := ACheckProcessBackupPrivileges;
   FRunDirectoryGetEffectiveRightsShortfallTests := ARunDirectoryGetEffectiveRightsShortfallTests;
@@ -1410,7 +1672,7 @@ begin
   for var LSubDirectory in ADirectories do
   begin
     // Each diagnostic is independent and logs its own error type. Fine-grained on purpose:
-    // a single directory can be on a network share, read-only, AND have an explicit deny —
+    // a single directory can be a reparse point, read-only, AND have an explicit deny —
     // we want all three reported, not just the first match.
     //
     // Each diagnostic is followed by ReportTest so progress accounting stays in lockstep
@@ -1418,25 +1680,44 @@ begin
 
     ReportItem(fstDirectory, LSubDirectory);
 
+    // Attributes are fetched ONCE; the four attribute tests below are pure bit tests.
     var LDesc: string := '';
+    var LAttributes: DWORD;
 
-    if IsOnNetworkShare(LSubDirectory, LDesc) then
-      LogError(LSubDirectory, frcNetworkShare, LDesc);
-    ReportTest(fstDirectory, LSubDirectory);
+    if TryGetAttributes(LSubDirectory, LAttributes, LDesc) then
+    begin
+      LDesc := '';
+      if IsReparsePoint(LAttributes, LSubDirectory, LDesc) then
+        LogError(LSubDirectory, frcIsReparsePoint, LDesc, esWarning);
+      ReportTest(fstDirectory, LSubDirectory);
+
+      LDesc := '';
+      if HasReadOnlyAttribute(LAttributes, LDesc) then
+        LogError(LSubDirectory, frcReadOnlyAttribute, LDesc, esInfo);
+      ReportTest(fstDirectory, LSubDirectory);
+
+      LDesc := '';
+      if IsEFSEncrypted(LAttributes, LDesc) then
+        LogError(LSubDirectory, frcEFSEncrypted, LDesc, esWarning);
+      ReportTest(fstDirectory, LSubDirectory);
+
+      LDesc := '';
+      if HasCloudOrOfflineAttribute(LAttributes, LDesc) then
+        LogError(LSubDirectory, frcCloudPlaceholder, LDesc, esWarning);
+      ReportTest(fstDirectory, LSubDirectory);
+    end
+    else
+    begin
+      LogError(LSubDirectory, frcDirectoryNotReadable, LDesc, esWarning);
+
+      // The four attribute tests cannot run — keep the progress counter in sync.
+      for var LSkipped := 1 to 4 do
+        ReportTest(fstDirectory, LSubDirectory);
+    end;
 
     LDesc := '';
-    if IsReparsePoint(LSubDirectory, LDesc) then
-      LogError(LSubDirectory, frcIsReparsePoint, LDesc);
-    ReportTest(fstDirectory, LSubDirectory);
-
-    LDesc := '';
-    if HasReadOnlyAttribute(LSubDirectory, LDesc) then
-      LogError(LSubDirectory, frcReadOnlyAttribute, LDesc);
-    ReportTest(fstDirectory, LSubDirectory);
-
-    LDesc := '';
-    if IsEFSEncrypted(LSubDirectory, LDesc) then
-      LogError(LSubDirectory, frcEFSEncrypted, LDesc);
+    if IsPathTooLong(LSubDirectory, LDesc) then
+      LogError(LSubDirectory, frcPathTooLong, LDesc, esWarning);
     ReportTest(fstDirectory, LSubDirectory);
 
     LDesc := '';
@@ -1453,7 +1734,7 @@ begin
     begin
       LDesc := '';
       if not CurrentUserIsOwner(LSubDirectory, LDesc) and not LDesc.IsEmpty then
-        LogError(LSubDirectory, frcOwnershipMismatch, LDesc);
+        LogError(LSubDirectory, frcOwnershipMismatch, LDesc, esInfo);
       ReportTest(fstDirectory, LSubDirectory);
     end;
 
@@ -1467,7 +1748,7 @@ begin
 
     LDesc := '';
     if IsDirectoryUnderUACVirtualization(LSubDirectory, LDesc) then
-      LogError(LSubDirectory, frcUACVirtualization, LDesc);
+      LogError(LSubDirectory, frcUACVirtualization, LDesc, esWarning);
     ReportTest(fstDirectory, LSubDirectory);
 
     // Primary access probe — drives the readable/writable statistic.
@@ -1501,25 +1782,44 @@ begin
 
     ReportItem(fstFile, LCurrentFile);
 
+    // Attributes are fetched ONCE; the four attribute tests below are pure bit tests.
     var LDesc: string := '';
+    var LAttributes: DWORD;
 
-    if IsOnNetworkShare(LCurrentFile, LDesc) then
-      LogError(LCurrentFile, frcNetworkShare, LDesc);
-    ReportTest(fstFile, LCurrentFile);
+    if TryGetAttributes(LCurrentFile, LAttributes, LDesc) then
+    begin
+      LDesc := '';
+      if IsReparsePoint(LAttributes, LCurrentFile, LDesc) then
+        LogError(LCurrentFile, frcIsReparsePoint, LDesc, esWarning);
+      ReportTest(fstFile, LCurrentFile);
+
+      LDesc := '';
+      if HasReadOnlyAttribute(LAttributes, LDesc) then
+        LogError(LCurrentFile, frcReadOnlyAttribute, LDesc, esWarning);
+      ReportTest(fstFile, LCurrentFile);
+
+      LDesc := '';
+      if IsEFSEncrypted(LAttributes, LDesc) then
+        LogError(LCurrentFile, frcEFSEncrypted, LDesc, esWarning);
+      ReportTest(fstFile, LCurrentFile);
+
+      LDesc := '';
+      if HasCloudOrOfflineAttribute(LAttributes, LDesc) then
+        LogError(LCurrentFile, frcCloudPlaceholder, LDesc, esWarning);
+      ReportTest(fstFile, LCurrentFile);
+    end
+    else
+    begin
+      LogError(LCurrentFile, frcFileNotReadable, LDesc, esWarning);
+
+      // The four attribute tests cannot run — keep the progress counter in sync.
+      for var LSkipped := 1 to 4 do
+        ReportTest(fstFile, LCurrentFile);
+    end;
 
     LDesc := '';
-    if IsReparsePoint(LCurrentFile, LDesc) then
-      LogError(LCurrentFile, frcIsReparsePoint, LDesc);
-    ReportTest(fstFile, LCurrentFile);
-
-    LDesc := '';
-    if HasReadOnlyAttribute(LCurrentFile, LDesc) then
-      LogError(LCurrentFile, frcReadOnlyAttribute, LDesc);
-    ReportTest(fstFile, LCurrentFile);
-
-    LDesc := '';
-    if IsEFSEncrypted(LCurrentFile, LDesc) then
-      LogError(LCurrentFile, frcEFSEncrypted, LDesc);
+    if IsPathTooLong(LCurrentFile, LDesc) then
+      LogError(LCurrentFile, frcPathTooLong, LDesc, esWarning);
     ReportTest(fstFile, LCurrentFile);
 
     LDesc := '';
@@ -1536,7 +1836,7 @@ begin
     begin
       LDesc := '';
       if not CurrentUserIsOwner(LCurrentFile, LDesc) and not LDesc.IsEmpty then
-        LogError(LCurrentFile, frcOwnershipMismatch, LDesc);
+        LogError(LCurrentFile, frcOwnershipMismatch, LDesc, esInfo);
       ReportTest(fstFile, LCurrentFile);
     end;
 
@@ -1548,9 +1848,11 @@ begin
       ReportTest(fstFile, LCurrentFile);
     end;
 
+    // In-use files are context, not failures: the permissive-share probe in
+    // TestOpenFileRights below still decides readable/writable.
     LDesc := '';
     if DiagnoseFileShareModes(LCurrentFile, ACheckWriteRights, LDesc) then
-      LogError(LCurrentFile, frcShareModeConflict, LDesc);
+      LogError(LCurrentFile, frcShareModeConflict, LDesc, esInfo);
     ReportTest(fstFile, LCurrentFile);
 
     // Primary access probe — drives the readable/writable statistic and triggers
@@ -1559,10 +1861,19 @@ begin
     if not TestOpenFileRights(LCurrentFile, ACheckWriteRights, LDesc) then
     begin
       var LIntegrityErr: string;
-      var LIntegrity: string := GetFileIntegrityLevel(LCurrentFile, LIntegrityErr);
+      var LFileIntegrityRID: Integer;
+      var LIntegrity: string := GetFileIntegrityLevel(LCurrentFile, LFileIntegrityRID, LIntegrityErr);
       if LIntegrity <> '' then
         LDesc := LDesc + Format(' | Integrity level: %s', [LIntegrity]) +
           IfThen(LIntegrityErr.IsEmpty, '', ' - ' + LIntegrityErr);
+
+      // Mandatory integrity: a file labeled above the process level is write-blocked
+      // by the no-write-up policy no matter what the ACLs say. This is exactly the
+      // kind of "permissions look fine but writes fail" case the tool exists for.
+      if (FProcessIntegrityRID >= 0) and (LFileIntegrityRID > FProcessIntegrityRID) then
+        LDesc := LDesc + Format(' | MANDATORY INTEGRITY BLOCK: file integrity (%s) is above process integrity (%s) — '
+          + 'write access is denied by the no-write-up policy regardless of ACLs',
+          [IntegrityRIDToDescription(LFileIntegrityRID), IntegrityRIDToDescription(FProcessIntegrityRID)]);
 
       if ACheckWriteRights then
         LogError(LCurrentFile, frcFileNotWritable, LDesc)
