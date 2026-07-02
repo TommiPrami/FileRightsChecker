@@ -33,6 +33,25 @@ const
   FILE_GENERIC_READ                = $00120089;
   FILE_GENERIC_WRITE               = $00120116;
 
+  // Attribute bits for offline / cloud-placeholder files (OneDrive, Dropbox, HSM).
+  // The RECALL_* bits are Windows 10 era and missing from older Winapi.Windows.
+  FILE_ATTRIBUTE_OFFLINE_BIT             = $00001000;
+  FILE_ATTRIBUTE_RECALL_ON_OPEN          = $00040000;
+  FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS   = $00400000;
+
+  // GetVolumeInformation file-system flag: every write on the volume fails.
+  FILE_READ_ONLY_VOLUME                  = $00080000;
+
+  // TOKEN_INFORMATION_CLASS value for the process integrity level
+  // (TokenIntegrityLevel) — enum member missing from some older RTLs, so we use
+  // the raw ordinal with a hard cast.
+  TOKEN_INTEGRITY_LEVEL_INFO_CLASS       = 25;
+
+  // WinError codes referenced in failure-hint texts; spelled out in case the RTL
+  // version in use predates them.
+  ERROR_DISK_QUOTA_EXCEEDED              = 1295;
+  ERROR_CANT_ACCESS_FILE                 = 1920;
+
 type
   TACE_HEADER = record
     AceType:  Byte;

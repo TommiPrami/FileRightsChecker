@@ -163,8 +163,10 @@ begin
     raise EArgumentException.Create(EXCEPTION_MESSAGE);
 
   try
-    JSONArrayToStringList(LRoot.GetValue<TJSONArray>(SETTING_NAME_READONLY_DIRECTORIES), FReadOnlyDirectories);
-    JSONArrayToStringList(LRoot.GetValue<TJSONArray>(SETTING_NAME_READWRITE_DIRECTORIES), FReadWriteDirectories);
+    // Non-generic GetValue returns nil for a missing key (the generic overload raises);
+    // JSONArrayToStringList tolerates nil, so partially written files still load.
+    JSONArrayToStringList(LRoot.GetValue(SETTING_NAME_READONLY_DIRECTORIES) as TJSONArray, FReadOnlyDirectories);
+    JSONArrayToStringList(LRoot.GetValue(SETTING_NAME_READWRITE_DIRECTORIES) as TJSONArray, FReadWriteDirectories);
   finally
     LRoot.Free;
   end;
@@ -208,8 +210,14 @@ begin
 
   var LSL := TStringList.Create;
   try
-    LSL.LoadFromFile(AFileName, TEncoding.UTF8);
-    LoadFromJSONString(LSL.Text);
+    try
+      LSL.LoadFromFile(AFileName, TEncoding.UTF8);
+      LoadFromJSONString(LSL.Text);
+    except
+      // Corrupt or unreadable settings must not block application startup —
+      // fall back to empty defaults; the next SaveToFile rewrites a clean file.
+      Clear;
+    end;
   finally
     LSL.Free;
   end;

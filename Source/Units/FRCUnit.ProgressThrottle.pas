@@ -24,7 +24,6 @@ type
     FHasReportedAny: Boolean;
     FLastShownPercent: Double;
     FCaptionPrefix: string;
-    FRestored: Boolean;
     function ShouldShow(const AProgress: Double): Boolean;
     procedure FireShow(const AText: string);
   public
@@ -65,7 +64,6 @@ begin
   FStopwatch := TStopwatch.StartNew;
   FHasReportedAny := False;
   FLastShownPercent := -1;
-  FRestored := False;
 end;
 
 procedure TProgressThrottle.Reset;
@@ -73,7 +71,6 @@ begin
   FStopwatch := TStopwatch.StartNew;
   FHasReportedAny := False;
   FLastShownPercent := -1;
-  FRestored := False;
 end;
 
 function TProgressThrottle.ShouldShow(const AProgress: Double): Boolean;
@@ -138,13 +135,12 @@ begin
   FireShow(FCaptionPrefix + '  - ' + LProgressText);
   FLastShownPercent := AProgress;
 
-  // On 100% restore the caption to its original text. Guard against double-restore
-  // in case the checker fires multiple final updates.
-  if LIsFinal and not FRestored then
-  begin
+  // On 100% restore the caption to its original text. Deliberately NOT one-shot:
+  // with epsilon comparison, near-final updates (99.999%+ on very large scans) also
+  // count as "final", and a one-shot guard would let a later progress write win and
+  // leave the caption stuck. Restoring repeatedly is idempotent — same text.
+  if LIsFinal then
     FireShow(FCaptionPrefix);
-    FRestored := True;
-  end;
 end;
 
 end.
