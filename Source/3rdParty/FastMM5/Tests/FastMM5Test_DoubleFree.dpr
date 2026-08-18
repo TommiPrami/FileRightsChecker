@@ -1,4 +1,4 @@
-{Regression test for the double free self cycle (issue #73).
+﻿{Regression test for the double free self cycle (issue #73).
 
  Freeing the same block twice must raise an invalid pointer error, and - the
  part that actually broke - it must not corrupt the pending free list while

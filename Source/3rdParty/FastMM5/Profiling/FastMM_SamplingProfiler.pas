@@ -1,4 +1,4 @@
-{
+﻿{
 
 FastMM_SamplingProfiler - periodic memory usage sampling for FastMM5
 

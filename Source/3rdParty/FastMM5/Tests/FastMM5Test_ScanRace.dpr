@@ -1,4 +1,4 @@
-{The counterpart to FastMM5Test_ScanCoverage:  that one checks that real
+﻿{The counterpart to FastMM5Test_ScanCoverage:  that one checks that real
  corruption is still found, this one that none is invented.
 
  Worker threads hammer small debug block allocation and freeing, so spans are

@@ -1,4 +1,4 @@
-(*
+﻿(*
 
 Fast Memory Manager Usage Tracker 2.20
 

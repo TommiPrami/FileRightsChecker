@@ -1,4 +1,4 @@
-{
+﻿{
 
 Fast Memory Manager: FullDebugMode Support DLL 1.70
 
