@@ -1,4 +1,4 @@
-﻿{Does FastMM_ScanDebugBlocksForCorruption still detect a corrupted debug block?
+{Does FastMM_ScanDebugBlocksForCorruption still detect a corrupted debug block?
 
  For each block size class the program allocates a debug block, corrupts one
  field, runs the scan and checks that the scan reported it.  The corruption is

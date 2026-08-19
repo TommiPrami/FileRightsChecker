@@ -1,4 +1,4 @@
-﻿{Multithreaded allocation stress.
+{Multithreaded allocation stress.
 
  Every thread allocates blocks of random sizes, fills them with a size dependent
  pattern, verifies that pattern and frees them again.  Optionally a share of the

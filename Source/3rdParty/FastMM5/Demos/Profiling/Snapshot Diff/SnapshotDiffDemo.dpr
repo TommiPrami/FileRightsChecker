@@ -1,4 +1,4 @@
-﻿{Demo and self-test for FastMM_SnapshotDiff:  allocates known objects/strings/raw blocks between snapshots and
+{Demo and self-test for FastMM_SnapshotDiff:  allocates known objects/strings/raw blocks between snapshots and
 verifies that the diff reports the expected deltas.  Exit code 0 = all checks passed.}
 program SnapshotDiffDemo;
 

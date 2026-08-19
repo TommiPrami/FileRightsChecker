@@ -1,4 +1,4 @@
-﻿{This sample library exports a single call that will leak a TObject.}
+{This sample library exports a single call that will leak a TObject.}
 
 library TestLibrary;
 

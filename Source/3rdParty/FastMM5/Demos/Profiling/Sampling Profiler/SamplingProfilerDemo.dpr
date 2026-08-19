@@ -1,4 +1,4 @@
-﻿{Demo and self-test for FastMM_SamplingProfiler:  runs a grow-then-shrink workload while a background sampler writes
+{Demo and self-test for FastMM_SamplingProfiler:  runs a grow-then-shrink workload while a background sampler writes
 CSV time series, then verifies the collected samples show the expected rise and fall.  Exit code 0 = all checks
 passed.}
 program SamplingProfilerDemo;

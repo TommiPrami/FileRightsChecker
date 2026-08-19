@@ -1,4 +1,4 @@
-﻿{Leak and address space growth detector:  hammers GetMem/FreeMem in each size
+{Leak and address space growth detector:  hammers GetMem/FreeMem in each size
  class in turn and checks that the memory manager gives everything back.
 
  Two things are asserted after every phase:

@@ -1,4 +1,4 @@
-﻿{What happens when the size fields of a debug block header are themselves the
+{What happens when the size fields of a debug block header are themselves the
  thing that got corrupted?  DebugFooterPtr is derived from UserSize and the
  stack traces from StackTraceEntryCount, so a corrupted size field decides where
  the scan reads.  This program corrupts those fields (and nothing else) and

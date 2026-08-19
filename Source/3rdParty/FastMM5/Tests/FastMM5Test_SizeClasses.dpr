@@ -1,4 +1,4 @@
-﻿{Walks every block size class:  small blocks, medium blocks and large blocks,
+{Walks every block size class:  small blocks, medium blocks and large blocks,
  plus reallocations that cross the class boundaries in both directions.
 
  Every block is filled with a size dependent pattern and read back, so a block

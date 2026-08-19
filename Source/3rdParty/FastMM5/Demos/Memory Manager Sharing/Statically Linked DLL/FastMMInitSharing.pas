@@ -1,4 +1,4 @@
-﻿{Important note:  This has to be the first unit in the DPR, because memory managers cannot be switched once memory has
+{Important note:  This has to be the first unit in the DPR, because memory managers cannot be switched once memory has
 been allocated, and the initialization sections of other units are likely to allocate memory.}
 
 unit FastMMInitSharing;

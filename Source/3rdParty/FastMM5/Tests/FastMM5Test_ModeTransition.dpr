@@ -1,4 +1,4 @@
-﻿{Contract regression test for the debug and erase mode switches (issue #85).
+{Contract regression test for the debug and erase mode switches (issue #85).
 
  The documented contract:  the internal nesting counter is adjusted on every
  Begin/Enter and End/Exit call, regardless of the return value.  Callers must
