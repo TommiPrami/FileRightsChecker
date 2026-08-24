@@ -1764,7 +1764,7 @@ begin
     ERROR_DISK_QUOTA_EXCEEDED:
       AErrorDescription := AErrorDescription + ' [Per-user disk quota exceeded — an administrator or another user may still be able to write]';
 
-    ERROR_FILENAME_EXCED_RANGE:
+    ERROR_FILENAME_EXCEEDED_RANGE:
       AErrorDescription := AErrorDescription + ' [Path exceeds MAX_PATH (260) — the application needs long-path support to open this]';
 
     ERROR_NETWORK_ACCESS_DENIED:
