@@ -1,4 +1,4 @@
-{Erase mode test:  while FastMM_BeginEraseAllocatedBlockContent is in effect
+﻿{Erase mode test:  while FastMM_BeginEraseAllocatedBlockContent is in effect
  every block handed out must be filled with $90, and while
  FastMM_BeginEraseFreedBlockContent is in effect every block given back must be
  filled with $80.  That includes the blocks ReallocMem allocates and frees when

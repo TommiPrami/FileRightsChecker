@@ -1,4 +1,4 @@
-{
+﻿{
 
 Replacement BorlndMM.DLL using FastMM5
 
@@ -122,7 +122,7 @@ exports
   FastMM_WalkBlocks,
   FastMM_ProcessAllPendingFrees,
   FastMM_ScanDebugBlocksForCorruption,
-  FastMM_GetUsageSummary,
+  FastMM_GetUsageSummary(ALockTimeoutMilliseconds: Cardinal),
   FastMM_LogStateToFile,
   FastMM_EnterMinimumAddressAlignment,
   FastMM_ExitMinimumAddressAlignment,

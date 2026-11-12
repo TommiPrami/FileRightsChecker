@@ -1,4 +1,4 @@
-program UsageTrackerDemo;
+﻿program UsageTrackerDemo;
 
 uses
   FastMM5,
