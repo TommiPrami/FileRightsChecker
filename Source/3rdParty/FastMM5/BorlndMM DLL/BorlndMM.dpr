@@ -1,4 +1,4 @@
-﻿{
+{
 
 Replacement BorlndMM.DLL using FastMM5
 

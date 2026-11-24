@@ -1,4 +1,4 @@
-﻿{Tests the stack traces of the debug support library (FastMM_FullDebugMode.dll
+{Tests the stack traces of the debug support library (FastMM_FullDebugMode.dll
  and FastMM_FullDebugMode64.dll).
 
  A known call chain is run, and each routine in it records its own return

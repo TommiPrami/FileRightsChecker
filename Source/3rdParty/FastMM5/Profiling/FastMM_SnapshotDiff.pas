@@ -1,4 +1,4 @@
-﻿{
+{
 
 FastMM_SnapshotDiff - heap snapshot capture and comparison for FastMM5
 

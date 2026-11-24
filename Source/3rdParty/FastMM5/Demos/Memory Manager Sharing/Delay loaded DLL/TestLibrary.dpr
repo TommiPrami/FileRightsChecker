@@ -1,4 +1,4 @@
-﻿{This sample library exports a single call that will leak a TObject.}
+{This sample library exports a single call that will leak a TObject.}
 
 // JCL_DEBUG_EXPERT_INSERTJDBG ON
 library TestLibrary;

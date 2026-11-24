@@ -1,4 +1,4 @@
-﻿{Basic debug mode test:  entering and leaving debug mode, allocating, writing,
+{Basic debug mode test:  entering and leaving debug mode, allocating, writing,
  reallocating and freeing blocks in both modes, and verifying that the memory
  manager hands back what was written and accounts for everything afterwards.
 
